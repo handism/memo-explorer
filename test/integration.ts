@@ -18,11 +18,34 @@ export async function run(): Promise<void> {
   assert.ok(root, 'isolated test root required');
   const ext = vscode.extensions.getExtension('local-tools.memo-explorer');
   assert.ok(ext);
-  const api = await ext.activate() as { tree: MemoTree; dragAndDrop: vscode.TreeDragAndDropController<Entry> };
+  const api = (await ext.activate()) as {
+    tree: MemoTree;
+    view: vscode.TreeView<Entry>;
+    dragAndDrop: vscode.TreeDragAndDropController<Entry>;
+  };
   assert.equal(api.tree.store?.root, path.join(root, 'notes'));
   assert.ok((await fs.stat(api.tree.store!.root)).isDirectory());
   const commands = await vscode.commands.getCommands();
-  for (const id of ['createFile', 'createDaily', 'createFolder', 'refresh', 'search', 'rename', 'delete', 'reveal', 'settings']) assert.ok(commands.includes(`memo.${id}`));
+  for (const id of [
+    'createFile',
+    'createDaily',
+    'createFolder',
+    'refresh',
+    'search',
+    'searchText',
+    'rename',
+    'delete',
+    'reveal',
+    'settings'
+  ])
+    assert.ok(commands.includes(`memo.${id}`));
+  const keybindings = ext.packageJSON.contributes.keybindings as { command: string }[];
+  for (const id of ['memo.createDaily', 'memo.createFile', 'memo.search', 'memo.searchText', 'memoExplorer.files.focus'])
+    assert.ok(
+      keybindings.some(k => k.command === id),
+      id
+    );
+  assert.ok(commands.includes('memoExplorer.files.focus'));
   let refreshes = 0;
   const subscription = api.tree.onDidChangeTreeData(() => refreshes++);
   try {
@@ -38,7 +61,26 @@ export async function run(): Promise<void> {
     const nestedDaily = path.join(api.tree.store!.root, '日記', 'Daily', `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, nestedDaily);
     assert.ok((await fs.readFile(nestedDaily, 'utf8')).startsWith('# '));
+    await vscode.workspace.getConfiguration('memoExplorer').update('dateFormat', 'YYYY/MM/YYYY-MM-DD', vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('memo.createDaily');
+    const now = new Date();
+    const tokenDaily = path.join(
+      api.tree.store!.root,
+      '日記',
+      'Daily',
+      formatDate(now, 'YYYY'),
+      formatDate(now, 'MM'),
+      `${formatDate(now, 'YYYY-MM-DD')}.md`
+    );
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, tokenDaily);
+    assert.ok((await fs.readFile(tokenDaily, 'utf8')).startsWith(`# ${formatDate(now, 'YYYY/MM/YYYY-MM-DD')}`));
+    await vscode.workspace.getConfiguration('memoExplorer').update('dateFormat', undefined, vscode.ConfigurationTarget.Global);
     await vscode.workspace.getConfiguration('memoExplorer').update('dailyFolder', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('memoExplorer.files.focus');
+    await waitFor(async () => api.view.visible, 'tree view visible');
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(nestedDaily));
+    await waitFor(async () => api.view.selection[0]?.path === nestedDaily, 'auto reveal of active editor');
+    assert.equal(api.tree.getParent(api.view.selection[0])?.path, path.dirname(nestedDaily));
     const baseline = refreshes;
     const nested = path.join(api.tree.store!.root, 'external');
     await fs.mkdir(nested);
@@ -49,21 +91,24 @@ export async function run(): Promise<void> {
     const children = await api.tree.getChildren(folder);
     assert.equal(children[0].name, 'external.txt');
     const item = api.tree.getTreeItem(children[0]);
+    assert.equal(item.iconPath, undefined, 'file icon theme applies via resourceUri');
     await vscode.commands.executeCommand(item.command!.command, ...item.command!.arguments!);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, children[0].path);
     await new Promise(resolve => setTimeout(resolve, 400));
     let before = refreshes;
     await fs.writeFile(children[0].path, 'changed outside');
-    await waitFor(async () => refreshes > before, 'external change watcher');
-    await new Promise(resolve => setTimeout(resolve, 400));
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal(refreshes, before, 'content changes do not refresh the tree');
     before = refreshes;
     await fs.unlink(children[0].path);
     await waitFor(async () => refreshes > before, 'external delete watcher');
     assert.equal((await api.tree.getChildren(folder)).length, 0);
     const target = path.join(api.tree.store!.root, 'target');
     await fs.mkdir(target);
-    const first = path.join(api.tree.store!.root, 'first.md'), second = path.join(nested, 'second.md');
-    await fs.writeFile(first, 'first'); await fs.writeFile(second, 'second');
+    const first = path.join(api.tree.store!.root, 'first.md'),
+      second = path.join(nested, 'second.md');
+    await fs.writeFile(first, 'first');
+    await fs.writeFile(second, 'second');
     const entry = (p: string, directory = false) => ({ path: p, name: path.basename(p), directory });
     const drop = async (sources: ReturnType<typeof entry>[], destination?: ReturnType<typeof entry>) => {
       const data = new vscode.DataTransfer();
@@ -73,7 +118,8 @@ export async function run(): Promise<void> {
     await drop([entry(first), entry(second)], entry(target, true));
     assert.equal(await fs.readFile(path.join(target, 'first.md'), 'utf8'), 'first');
     assert.equal(await fs.readFile(path.join(target, 'second.md'), 'utf8'), 'second');
-    await assert.rejects(fs.access(first)); await assert.rejects(fs.access(second));
+    await assert.rejects(fs.access(first));
+    await assert.rejects(fs.access(second));
     await drop([entry(target, true)], entry(path.join(target, 'first.md')));
     assert.ok((await fs.stat(target)).isDirectory(), 'folder not moved into itself');
     await drop([entry(path.join(target, 'first.md'))]);
@@ -94,6 +140,10 @@ export async function run(): Promise<void> {
     await fs.writeFile(path.join(root, 'notes', 'old.md'), 'old root');
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
-    console.log('PASS integration: activation, commands, daily preservation, daily folder, hierarchy, editor opening, drag and drop move, external create/change/delete, storage switch, watcher disposal');
-  } finally { subscription.dispose(); }
+    console.log(
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal'
+    );
+  } finally {
+    subscription.dispose();
+  }
 }

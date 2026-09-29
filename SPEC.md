@@ -40,15 +40,35 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 
 1. ➕ **新規メモ作成 (`memo.createFile`)**
    - ファイル名入力プロンプトを表示（拡張子省略時は自動で `.md` を付与）。
+   - `subfolder/filename` 形式で入力すると親フォルダを自動作成する。
+   - 同名ファイルがある場合は上書きせず、既存ファイルを開く選択肢を提示する。
    - 作成後、即座にエディタで開く。
 2. 📅 **デイリーノート作成 (`memo.createDaily`)**
    - 今日の日付（例: `2026-09-29.md`）のファイルをワンクリックで生成し、エディタで開く。
    - すでに同名ファイルが存在する場合は、既存のファイルを開く。
    - 作成先フォルダは `memoExplorer.dailyFolder`（保存先からの相対パス）で指定可能。存在しなければ自動作成する。
+   - 日付書式に `/` を含めると年・月などのサブフォルダへ振り分ける（例: `YYYY/MM/YYYY-MM-DD`）。
 3. 📂 **新規フォルダ作成 (`memo.createFolder`)**
    - サブフォルダ名を入力して作成。カテゴリ分けに対応。
 4. 🔄 **再読み込み (`memo.refresh`)**
    - ファイルの追加・削除があった場合に手動で一覧を最新化。
+5. 🔍 **ファイル名検索 (`memo.search`)** / **全文検索 (`memo.searchText`)**
+   - 全文検索は保存先配下の全メモ本文を検索し、一致行をQuickPickに表示。選択で該当行を開く。
+
+### 3.4 キーボードショートカット
+全OS共通で以下を既定とする（macOSは `Cmd+Option+D` 等がOS予約のため `Ctrl+Option` を使用）。
+
+| キー | コマンド |
+| :--- | :--- |
+| `Ctrl+Alt+D` | `memo.createDaily` |
+| `Ctrl+Alt+N` | `memo.createFile` |
+| `Ctrl+Alt+M` | `memo.search` |
+| `Ctrl+Alt+Shift+F` | `memo.searchText` |
+| `Ctrl+Alt+E` | `memoExplorer.files.focus` |
+
+### 3.5 エディタ連携
+- エディタで保存先内のメモを開くと、ツリービューで該当ファイルを選択表示する（`memoExplorer.autoReveal` でON/OFF）。
+- ツリーのアイコンはVS Codeのファイルアイコンテーマに従う。
 
 ### 3.3 コンテキストメニュー（右クリック操作）
 ツリーアイテム上で右クリックしたときに利用可能な操作：
@@ -70,13 +90,15 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
   - チルダ（`~`）をユーザーホームディレクトリ（例: `/Users/username`）に自動展開する。
 
 ### 4.2 ファイル監視（自動更新）
-- VSCodeの `FileSystemWatcher` を利用し、メモフォルダ内でファイルの追加・削除・変更があった場合、ツリービューを自動的に更新する（Obsidianや外部エディタで編集された場合も追従）。
+- VSCodeの `FileSystemWatcher` を利用し、メモフォルダ内でファイルの追加・削除があった場合、ツリービューを自動的に更新する（Obsidianや外部エディタで操作された場合も追従）。
+- ツリーは名前と構造のみを表示するため、ファイル内容の変更（保存）では再読み込みしない。
 
 ### 4.3 デイリーノートのフォーマット設定
 - デイリーノートの日付フォーマットを設定でカスタマイズ可能にする。
   - 設定キー: `memoExplorer.dateFormat`
   - デフォルト値: `YYYY-MM-DD`
 - 任意のテンプレートテキストを挿入可能にする（オプション）。
+  - 置換変数: `{{date}}`、`{{isoDate}}`、`{{year}}`、`{{month}}`、`{{day}}`、`{{time}}`、`{{weekday}}`、`{{title}}`
 
 ---
 
@@ -88,6 +110,8 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 | `memoExplorer.defaultExtension` | `string` | `".md"` | 新規ファイル作成時のデフォルト拡張子 |
 | `memoExplorer.dateFormat` | `string` | `"YYYY-MM-DD"` | デイリーノート作成時のファイル名日付書式 |
 | `memoExplorer.dailyFolder` | `string` | `""` | デイリーノートの作成先（保存先からの相対パス。空欄は直下） |
+| `memoExplorer.dailyTemplate` | `string` | `""` | 新規デイリーノートの本文テンプレート |
+| `memoExplorer.autoReveal` | `boolean` | `true` | エディタで開いたメモをツリーで自動選択 |
 
 ---
 

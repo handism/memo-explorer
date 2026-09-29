@@ -2,65 +2,266 @@
   "name": "memo-explorer",
   "displayName": "Memo Explorer",
   "description": "VS Code内でグローバルなMarkdownメモとObsidian Vaultを管理します。",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "local-tools",
   "license": "UNLICENSED",
-  "repository": { "type": "git", "url": "https://github.com/handism/util-tools.git" },
-  "engines": { "vscode": "^1.85.0" },
-  "categories": ["Other"],
-  "extensionKind": ["ui"],
+  "icon": "media/icon.png",
+  "keywords": [
+    "memo",
+    "markdown",
+    "obsidian",
+    "notes",
+    "daily-note"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/handism/memo-explorer.git"
+  },
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "ui"
+  ],
   "main": "./out/src/extension.js",
-  "activationEvents": ["onStartupFinished"],
-  "capabilities": { "untrustedWorkspaces": { "supported": true }, "virtualWorkspaces": false },
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": false
+  },
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
     "test": "npm run compile && node --test out/test/core.test.js",
     "test:integration": "npm run compile && node scripts/integration.cjs",
+    "typecheck": "tsc -p . --noEmit",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "vscode:prepublish": "npm run compile",
     "package": "vsce package"
   },
   "contributes": {
-    "viewsContainers": { "activitybar": [{ "id": "memoExplorer", "title": "MEMO EXPLORER", "icon": "media/memo.svg" }] },
-    "views": { "memoExplorer": [{ "id": "memoExplorer.files", "name": "MEMO EXPLORER" }] },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "memoExplorer",
+          "title": "MEMO EXPLORER",
+          "icon": "media/memo.svg"
+        }
+      ]
+    },
+    "views": {
+      "memoExplorer": [
+        {
+          "id": "memoExplorer.files",
+          "name": "MEMO EXPLORER"
+        }
+      ]
+    },
     "commands": [
-      { "command": "memo.createFile", "title": "新規メモ作成", "category": "Memo Explorer", "icon": "$(new-file)" },
-      { "command": "memo.createDaily", "title": "今日のデイリーノート", "category": "Memo Explorer", "icon": "$(calendar)" },
-      { "command": "memo.createFolder", "title": "新規フォルダ作成", "category": "Memo Explorer", "icon": "$(new-folder)" },
-      { "command": "memo.refresh", "title": "再読み込み", "category": "Memo Explorer", "icon": "$(refresh)" },
-      { "command": "memo.search", "title": "メモを検索", "category": "Memo Explorer", "icon": "$(search)" },
-      { "command": "memo.rename", "title": "名前の変更", "category": "Memo Explorer" },
-      { "command": "memo.delete", "title": "削除（ゴミ箱へ移動）", "category": "Memo Explorer" },
-      { "command": "memo.reveal", "title": "Finder / Explorerで表示", "category": "Memo Explorer" },
-      { "command": "memo.settings", "title": "設定を開く", "category": "Memo Explorer", "icon": "$(gear)" }
+      {
+        "command": "memo.createFile",
+        "title": "新規メモ作成",
+        "category": "Memo Explorer",
+        "icon": "$(new-file)"
+      },
+      {
+        "command": "memo.createDaily",
+        "title": "今日のデイリーノート",
+        "category": "Memo Explorer",
+        "icon": "$(calendar)"
+      },
+      {
+        "command": "memo.createFolder",
+        "title": "新規フォルダ作成",
+        "category": "Memo Explorer",
+        "icon": "$(new-folder)"
+      },
+      {
+        "command": "memo.refresh",
+        "title": "再読み込み",
+        "category": "Memo Explorer",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "memo.search",
+        "title": "メモを検索",
+        "category": "Memo Explorer",
+        "icon": "$(search)"
+      },
+      {
+        "command": "memo.searchText",
+        "title": "メモ本文を全文検索",
+        "category": "Memo Explorer",
+        "icon": "$(search-fuzzy)"
+      },
+      {
+        "command": "memo.rename",
+        "title": "名前の変更",
+        "category": "Memo Explorer"
+      },
+      {
+        "command": "memo.delete",
+        "title": "削除（ゴミ箱へ移動）",
+        "category": "Memo Explorer"
+      },
+      {
+        "command": "memo.reveal",
+        "title": "Finder / Explorerで表示",
+        "category": "Memo Explorer"
+      },
+      {
+        "command": "memo.settings",
+        "title": "設定を開く",
+        "category": "Memo Explorer",
+        "icon": "$(gear)"
+      }
     ],
     "menus": {
       "view/title": [
-        { "command": "memo.createFile", "when": "view == memoExplorer.files", "group": "navigation@1" },
-        { "command": "memo.createDaily", "when": "view == memoExplorer.files", "group": "navigation@2" },
-        { "command": "memo.createFolder", "when": "view == memoExplorer.files", "group": "navigation@3" },
-        { "command": "memo.refresh", "when": "view == memoExplorer.files", "group": "navigation@4" },
-        { "command": "memo.search", "when": "view == memoExplorer.files", "group": "navigation@5" },
-        { "command": "memo.settings", "when": "view == memoExplorer.files", "group": "settings" }
+        {
+          "command": "memo.createFile",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@1"
+        },
+        {
+          "command": "memo.createDaily",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@2"
+        },
+        {
+          "command": "memo.createFolder",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@3"
+        },
+        {
+          "command": "memo.refresh",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@4"
+        },
+        {
+          "command": "memo.search",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@5"
+        },
+        {
+          "command": "memo.searchText",
+          "when": "view == memoExplorer.files",
+          "group": "navigation@6"
+        },
+        {
+          "command": "memo.settings",
+          "when": "view == memoExplorer.files",
+          "group": "settings"
+        }
       ],
       "view/item/context": [
-        { "command": "memo.createFile", "when": "view == memoExplorer.files && viewItem == memoFolder", "group": "creation@1" },
-        { "command": "memo.createFolder", "when": "view == memoExplorer.files && viewItem == memoFolder", "group": "creation@2" },
-        { "command": "memo.rename", "when": "view == memoExplorer.files", "group": "edit@1" },
-        { "command": "memo.delete", "when": "view == memoExplorer.files", "group": "edit@2" },
-        { "command": "memo.reveal", "when": "view == memoExplorer.files", "group": "reveal" }
+        {
+          "command": "memo.createFile",
+          "when": "view == memoExplorer.files && viewItem == memoFolder",
+          "group": "creation@1"
+        },
+        {
+          "command": "memo.createFolder",
+          "when": "view == memoExplorer.files && viewItem == memoFolder",
+          "group": "creation@2"
+        },
+        {
+          "command": "memo.rename",
+          "when": "view == memoExplorer.files",
+          "group": "edit@1"
+        },
+        {
+          "command": "memo.delete",
+          "when": "view == memoExplorer.files",
+          "group": "edit@2"
+        },
+        {
+          "command": "memo.reveal",
+          "when": "view == memoExplorer.files",
+          "group": "reveal"
+        }
       ]
     },
+    "keybindings": [
+      {
+        "command": "memo.createDaily",
+        "key": "ctrl+alt+d"
+      },
+      {
+        "command": "memo.createFile",
+        "key": "ctrl+alt+n"
+      },
+      {
+        "command": "memo.search",
+        "key": "ctrl+alt+m"
+      },
+      {
+        "command": "memo.searchText",
+        "key": "ctrl+alt+shift+f"
+      },
+      {
+        "command": "memoExplorer.files.focus",
+        "key": "ctrl+alt+e"
+      }
+    ],
     "configuration": {
       "title": "Memo Explorer",
       "properties": {
-        "memoExplorer.storagePath": { "type": "string", "default": "~/Documents/memo", "scope": "application", "description": "PC共通の保存先。絶対パスまたは ~/ で始まるパス。" },
-        "memoExplorer.defaultExtension": { "type": "string", "default": ".md", "scope": "application", "pattern": "^\\.?[A-Za-z0-9]+$", "description": "拡張子省略時に付ける拡張子。" },
-        "memoExplorer.dateFormat": { "type": "string", "default": "YYYY-MM-DD", "scope": "application", "description": "YYYY、YY、MM、M、DD、Dに対応。[文字列]でリテラル指定。パス区切りは使用できません。" },
-        "memoExplorer.dailyFolder": { "type": "string", "default": "", "scope": "application", "description": "デイリーノートを作成するフォルダ。保存先からの相対パス（例: Daily、日記/2026）。空欄なら保存先直下。存在しないフォルダは自動作成。" },
-        "memoExplorer.dailyTemplate": { "type": "string", "default": "", "scope": "application", "editPresentation": "multilineText", "description": "新規デイリーノートの本文。{{date}}は設定書式の日付、{{isoDate}}はYYYY-MM-DDに置換。" }
+        "memoExplorer.storagePath": {
+          "type": "string",
+          "default": "~/Documents/memo",
+          "scope": "application",
+          "description": "PC共通の保存先。絶対パスまたは ~/ で始まるパス。"
+        },
+        "memoExplorer.defaultExtension": {
+          "type": "string",
+          "default": ".md",
+          "scope": "application",
+          "pattern": "^\\.?[A-Za-z0-9]+$",
+          "description": "拡張子省略時に付ける拡張子。"
+        },
+        "memoExplorer.dateFormat": {
+          "type": "string",
+          "default": "YYYY-MM-DD",
+          "scope": "application",
+          "description": "YYYY、YY、MM、M、DD、Dに対応。[文字列]でリテラル指定。/ で区切るとサブフォルダに振り分けます（例: YYYY/MM/YYYY-MM-DD → 2026/09/2026-09-29.md）。"
+        },
+        "memoExplorer.dailyFolder": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "description": "デイリーノートを作成するフォルダ。保存先からの相対パス（例: Daily、日記/2026）。空欄なら保存先直下。存在しないフォルダは自動作成。"
+        },
+        "memoExplorer.dailyTemplate": {
+          "type": "string",
+          "default": "",
+          "scope": "application",
+          "editPresentation": "multilineText",
+          "description": "新規デイリーノートの本文。{{date}}は設定書式の日付、{{isoDate}}はYYYY-MM-DD、{{year}}・{{month}}・{{day}}は年・月・日、{{time}}は作成時刻（HH:mm）、{{weekday}}は表示言語の曜日（月 / Mon）、{{title}}はファイル名（拡張子なし）に置換。"
+        },
+        "memoExplorer.autoReveal": {
+          "type": "boolean",
+          "default": true,
+          "scope": "application",
+          "description": "エディタで開いたメモをツリービューで自動的に選択表示します。"
+        }
       }
     }
   },
-  "devDependencies": { "@types/node": "^22.0.0", "@types/vscode": "1.85.0", "@vscode/vsce": "^3.6.0", "@vscode/test-electron": "^2.5.0", "typescript": "^5.9.0" }
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/vscode": "1.85.0",
+    "@vscode/test-electron": "^2.5.0",
+    "@vscode/vsce": "^3.6.0",
+    "prettier": "^3.9.9",
+    "typescript": "^5.9.0"
+  }
 }

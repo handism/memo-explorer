@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - id: version
+        run: echo "version=$(node -p "require('./package.json').version")" >> "$GITHUB_OUTPUT"
+      - run: npm ci
+      - run: npm run format:check
+      - run: npm run typecheck
+      - run: npm test
+      - run: xvfb-run -a npm run test:integration
+      - run: npx vsce package --skip-license --out memo-explorer-${{ steps.version.outputs.version }}.vsix
+      - uses: actions/upload-artifact@v4
+        with:
+          name: memo-explorer-vsix
+          path: memo-explorer-${{ steps.version.outputs.version }}.vsix
+
+  # package.json のバージョンに対応する GitHub Release がまだ無ければ作成する（タグは自動で付く）
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency: release
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      VERSION: ${{ needs.build.outputs.version }}
+    steps:
+      - id: check
+        run: |
+          if gh release view "v$VERSION" > /dev/null 2>&1; then
+            echo "v$VERSION はリリース済みのためスキップします。"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.check.outputs.exists == 'false'
+        uses: actions/download-artifact@v4
+        with:
+          name: memo-explorer-vsix
+      - if: steps.check.outputs.exists == 'false'
+        run: |
+          gh release create "v$VERSION" "memo-explorer-$VERSION.vsix" \
+            --target "$GITHUB_SHA" \
+            --title "Memo Explorer v$VERSION" \
+            --generate-notes

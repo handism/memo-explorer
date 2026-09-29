@@ -19,3 +19,6 @@ SPEC.md
 .npmrc
 *.log
 .DS_Store
+.prettierrc.json
+.prettierignore
+media/icon.svg
