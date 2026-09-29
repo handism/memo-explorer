@@ -1,0 +1,1 @@
+{"version":"0.2.0","configurations":[{"name":"Run Memo Explorer","type":"extensionHost","request":"launch","args":["--extensionDevelopmentPath=${workspaceFolder}"],"outFiles":["${workspaceFolder}/out/**/*.js"],"preLaunchTask":"npm: compile"}]}

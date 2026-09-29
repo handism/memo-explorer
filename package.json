@@ -1,0 +1,64 @@
+{
+  "name": "memo-explorer",
+  "displayName": "Memo Explorer",
+  "description": "VS Code内でグローバルなMarkdownメモとObsidian Vaultを管理します。",
+  "version": "0.1.0",
+  "publisher": "local-tools",
+  "license": "UNLICENSED",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Other"],
+  "extensionKind": ["ui"],
+  "main": "./out/src/extension.js",
+  "activationEvents": ["onStartupFinished"],
+  "capabilities": { "untrustedWorkspaces": { "supported": true }, "virtualWorkspaces": false },
+  "scripts": {
+    "compile": "tsc -p .",
+    "watch": "tsc -watch -p .",
+    "test": "npm run compile && node --test out/test/core.test.js",
+    "test:integration": "npm run compile && node scripts/integration.cjs",
+    "vscode:prepublish": "npm run compile",
+    "package": "vsce package --allow-missing-repository --out memo-explorer-0.1.0.vsix"
+  },
+  "contributes": {
+    "viewsContainers": { "activitybar": [{ "id": "memoExplorer", "title": "MEMO EXPLORER", "icon": "media/memo.svg" }] },
+    "views": { "memoExplorer": [{ "id": "memoExplorer.files", "name": "MEMO EXPLORER" }] },
+    "commands": [
+      { "command": "memo.createFile", "title": "新規メモ作成", "category": "Memo Explorer", "icon": "$(new-file)" },
+      { "command": "memo.createDaily", "title": "今日のデイリーノート", "category": "Memo Explorer", "icon": "$(calendar)" },
+      { "command": "memo.createFolder", "title": "新規フォルダ作成", "category": "Memo Explorer", "icon": "$(new-folder)" },
+      { "command": "memo.refresh", "title": "再読み込み", "category": "Memo Explorer", "icon": "$(refresh)" },
+      { "command": "memo.search", "title": "メモを検索", "category": "Memo Explorer", "icon": "$(search)" },
+      { "command": "memo.rename", "title": "名前の変更", "category": "Memo Explorer" },
+      { "command": "memo.delete", "title": "削除（ゴミ箱へ移動）", "category": "Memo Explorer" },
+      { "command": "memo.reveal", "title": "Finder / Explorerで表示", "category": "Memo Explorer" },
+      { "command": "memo.settings", "title": "設定を開く", "category": "Memo Explorer", "icon": "$(gear)" }
+    ],
+    "menus": {
+      "view/title": [
+        { "command": "memo.createFile", "when": "view == memoExplorer.files", "group": "navigation@1" },
+        { "command": "memo.createDaily", "when": "view == memoExplorer.files", "group": "navigation@2" },
+        { "command": "memo.createFolder", "when": "view == memoExplorer.files", "group": "navigation@3" },
+        { "command": "memo.refresh", "when": "view == memoExplorer.files", "group": "navigation@4" },
+        { "command": "memo.search", "when": "view == memoExplorer.files", "group": "navigation@5" },
+        { "command": "memo.settings", "when": "view == memoExplorer.files", "group": "settings" }
+      ],
+      "view/item/context": [
+        { "command": "memo.createFile", "when": "view == memoExplorer.files && viewItem == memoFolder", "group": "creation@1" },
+        { "command": "memo.createFolder", "when": "view == memoExplorer.files && viewItem == memoFolder", "group": "creation@2" },
+        { "command": "memo.rename", "when": "view == memoExplorer.files", "group": "edit@1" },
+        { "command": "memo.delete", "when": "view == memoExplorer.files", "group": "edit@2" },
+        { "command": "memo.reveal", "when": "view == memoExplorer.files", "group": "reveal" }
+      ]
+    },
+    "configuration": {
+      "title": "Memo Explorer",
+      "properties": {
+        "memoExplorer.storagePath": { "type": "string", "default": "~/Documents/memo", "scope": "application", "description": "PC共通の保存先。絶対パスまたは ~/ で始まるパス。" },
+        "memoExplorer.defaultExtension": { "type": "string", "default": ".md", "scope": "application", "pattern": "^\\.?[A-Za-z0-9]+$", "description": "拡張子省略時に付ける拡張子。" },
+        "memoExplorer.dateFormat": { "type": "string", "default": "YYYY-MM-DD", "scope": "application", "description": "YYYY、YY、MM、M、DD、Dに対応。[文字列]でリテラル指定。パス区切りは使用できません。" },
+        "memoExplorer.dailyTemplate": { "type": "string", "default": "", "scope": "application", "editPresentation": "multilineText", "description": "新規デイリーノートの本文。{{date}}は設定書式の日付、{{isoDate}}はYYYY-MM-DDに置換。" }
+      }
+    }
+  },
+  "devDependencies": { "@types/node": "^22.0.0", "@types/vscode": "1.85.0", "@vscode/vsce": "^3.6.0", "@vscode/test-electron": "^2.5.0", "typescript": "^5.9.0" }
+}
