@@ -37,6 +37,9 @@ export function formatDate(date: Date, format: string): string {
 export function dailyContent(template: string, date: Date, format: string): string {
   return template.replace(/\{\{(date|isoDate)\}\}/g, (_, key: string) => formatDate(date, key === 'date' ? format : 'YYYY-MM-DD'));
 }
+export function folderSegments(value: string): string[] {
+  return value.split(/[/\\]/).filter(segment => segment !== '').map(checkedName);
+}
 export function inside(root: string, target: string): boolean {
   const relative = path.relative(root, target);
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
@@ -78,6 +81,18 @@ export class MemoStore {
     const target = path.join(directory, checkedName(name));
     await fs.mkdir(target);
     return target;
+  }
+  async ensureFolder(segments: string[]): Promise<string> {
+    let current = this.root;
+    for (const segment of segments) {
+      await this.assertInside(current);
+      current = path.join(current, checkedName(segment));
+      try { await fs.mkdir(current); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+    }
+    await this.assertInside(current);
+    if (!(await fs.stat(current)).isDirectory()) throw new Error(`「${path.relative(this.root, current)}」はフォルダではありません。`);
+    return current;
   }
   async planMove(sources: Entry[], directory: string): Promise<{ from: string; to: string }[]> {
     await this.assertInside(directory);

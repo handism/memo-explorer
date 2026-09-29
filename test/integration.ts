@@ -33,6 +33,12 @@ export async function run(): Promise<void> {
     await fs.writeFile(daily, 'Do not replace this');
     await vscode.commands.executeCommand('memo.createDaily');
     assert.equal(await fs.readFile(daily, 'utf8'), 'Do not replace this');
+    await vscode.workspace.getConfiguration('memoExplorer').update('dailyFolder', '日記/Daily', vscode.ConfigurationTarget.Global);
+    await vscode.commands.executeCommand('memo.createDaily');
+    const nestedDaily = path.join(api.tree.store!.root, '日記', 'Daily', `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, nestedDaily);
+    assert.ok((await fs.readFile(nestedDaily, 'utf8')).startsWith('# '));
+    await vscode.workspace.getConfiguration('memoExplorer').update('dailyFolder', undefined, vscode.ConfigurationTarget.Global);
     const baseline = refreshes;
     const nested = path.join(api.tree.store!.root, 'external');
     await fs.mkdir(nested);
@@ -88,6 +94,6 @@ export async function run(): Promise<void> {
     await fs.writeFile(path.join(root, 'notes', 'old.md'), 'old root');
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
-    console.log('PASS integration: activation, commands, daily preservation, hierarchy, editor opening, drag and drop move, external create/change/delete, storage switch, watcher disposal');
+    console.log('PASS integration: activation, commands, daily preservation, daily folder, hierarchy, editor opening, drag and drop move, external create/change/delete, storage switch, watcher disposal');
   } finally { subscription.dispose(); }
 }

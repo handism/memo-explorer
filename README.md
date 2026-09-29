@@ -14,7 +14,7 @@ VS Code 1.85以降が対象です。初回起動時に `~/Documents/memo` を自
 
 - タイトルバー：新規メモ、今日のデイリーノート、新規フォルダ、再読み込み、検索。
 - 新規メモ：名前に拡張子がなければ `.md` を追加し、作成したファイルをエディタで開きます。同名ファイルは上書きしません。
-- デイリーノート：ローカル時刻の今日の日付でルート直下に `.md` を作成します。既存ノートがあれば本文を変更せず開きます。
+- デイリーノート：ローカル時刻の今日の日付で `.md` を作成します。作成先は `memoExplorer.dailyFolder` で指定でき（初期値はルート直下）、フォルダがなければ自動作成します。既存ノートがあれば本文を変更せず開きます。
 - サブフォルダ内への作成：対象フォルダを右クリックして作成します。タイトルバー・コマンドパレットからの作成先はルートです。
 - 右クリック：名前の変更、確認後にゴミ箱へ移動（複数選択時はまとめて移動）、Finder / Explorer / OSのファイルマネージャーで表示。
 - ドラッグ&ドロップ：ファイル・フォルダをフォルダへドロップして移動します。Cmd/Ctrl・Shiftで複数選択してまとめて移動できます。ファイルへのドロップはそのファイルと同じフォルダ、空白部分へのドロップはルートへの移動です。移動先の同名ファイルは上書きせず、フォルダをそれ自身の中へ移動することもできません。開いているエディタは移動先に追従します。
@@ -34,6 +34,7 @@ VS Codeのユーザー設定で変更します。PC共通のためワークス�
 | `memoExplorer.storagePath` | `~/Documents/memo` | 絶対パスまたはホーム相対パス。Windowsでは `C:\\Users\\name\\Documents\\memo` など |
 | `memoExplorer.defaultExtension` | `.md` | 新規メモの拡張子。`txt`のようなドット省略にも対応 |
 | `memoExplorer.dateFormat` | `YYYY-MM-DD` | `YYYY`、`YY`、`MM`、`M`、`DD`、`D`。固定文字は `[Daily]` のように囲む |
+| `memoExplorer.dailyFolder` | 空文字 | デイリーノートの作成先。保存先からの相対パス（例: `Daily`、`日記/2026`）。空欄ならルート直下 |
 | `memoExplorer.dailyTemplate` | 空文字 | 新規デイリーノートにだけ挿入する本文 |
 
 テンプレートの `{{date}}` は設定した日付書式、`{{isoDate}}` は `YYYY-MM-DD` に置換します。
@@ -42,6 +43,7 @@ VS Codeのユーザー設定で変更します。PC共通のためワークス�
 {
   "memoExplorer.storagePath": "~/Documents/My Vault",
   "memoExplorer.dateFormat": "YYYY-MM-DD",
+  "memoExplorer.dailyFolder": "Daily",
   "memoExplorer.dailyTemplate": "# {{date}}\n\n## メモ\n\n## TODO\n- [ ] \n"
 }
 ```

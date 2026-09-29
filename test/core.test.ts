@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { MemoStore, topLevel, storagePath, noteName, validateName, formatDate, dailyContent, inside } from '../src/core';
+import { MemoStore, topLevel, storagePath, noteName, validateName, formatDate, dailyContent, inside, folderSegments } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
   assert.equal(storagePath('~/Documents/memo'), path.join(os.homedir(), 'Documents/memo'));
@@ -79,6 +79,25 @@ test('move planning for drag and drop', async t => {
   await assert.rejects(store.planMove([top], b.path));
   await assert.rejects(store.planMove([top], root));
   await assert.rejects(store.planMove([entry(store.root, true)], b.path));
+});
+test('daily folder settings create nested folders inside storage', async t => {
+  assert.deepEqual(folderSegments(''), []);
+  assert.deepEqual(folderSegments('/日記//2026/'), ['日記', '2026']);
+  assert.deepEqual(folderSegments('Daily\\Notes'), ['Daily', 'Notes']);
+  for (const bad of ['..', 'Daily/../x', 'a/CON', 'a/b:']) assert.throws(() => folderSegments(bad), bad);
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-daily-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  assert.equal(await store.ensureFolder([]), store.root);
+  const folder = await store.ensureFolder(['日記', '2026']);
+  assert.equal(folder, path.join(store.root, '日記', '2026'));
+  assert.equal(await store.ensureFolder(['日記', '2026']), folder);
+  await store.createFile(store.root, 'file.md');
+  await assert.rejects(store.ensureFolder(['file.md']));
+  await fs.symlink(root, path.join(store.root, 'escape'));
+  await assert.rejects(store.ensureFolder(['escape', 'daily']));
+  await assert.rejects(fs.stat(path.join(root, 'daily')));
 });
 test('top-level selection removes duplicates and nested entries', () => {
   const entry = (p: string, directory = false) => ({ path: path.join('/memo', p), name: path.basename(p), directory });

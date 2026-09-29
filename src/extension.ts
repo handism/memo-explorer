@@ -1,6 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
-import { MemoStore, Entry, topLevel, storagePath, noteName, validateName, checkedName, formatDate, dailyContent } from './core';
+import { MemoStore, Entry, topLevel, storagePath, noteName, validateName, checkedName, formatDate, dailyContent, folderSegments } from './core';
 
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<Entry | undefined>();
@@ -116,7 +116,8 @@ export async function activate(context: vscode.ExtensionContext) {
   register('memo.createDaily', async store => {
     const now = new Date(), format = config().get<string>('dateFormat', 'YYYY-MM-DD');
     const name = checkedName(checkedName(formatDate(now, format)) + '.md');
-    const target = await store.createFile(store.root, name, dailyContent(config().get<string>('dailyTemplate', ''), now, format), true);
+    const folder = await store.ensureFolder(folderSegments(config().get<string>('dailyFolder', '')));
+    const target = await store.createFile(folder, name, dailyContent(config().get<string>('dailyTemplate', ''), now, format), true);
     tree.refresh(); await open(target);
   });
   register('memo.search', async store => { const entry = await choose(store); if (entry) await open(entry.path); });

@@ -44,6 +44,7 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 2. 📅 **デイリーノート作成 (`memo.createDaily`)**
    - 今日の日付（例: `2026-09-29.md`）のファイルをワンクリックで生成し、エディタで開く。
    - すでに同名ファイルが存在する場合は、既存のファイルを開く。
+   - 作成先フォルダは `memoExplorer.dailyFolder`（保存先からの相対パス）で指定可能。存在しなければ自動作成する。
 3. 📂 **新規フォルダ作成 (`memo.createFolder`)**
    - サブフォルダ名を入力して作成。カテゴリ分けに対応。
 4. 🔄 **再読み込み (`memo.refresh`)**
@@ -86,6 +87,7 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 | `memoExplorer.storagePath` | `string` | `"~/Documents/memo"` | メモを保存するグローバルフォルダの絶対パスまたはホーム相対パス |
 | `memoExplorer.defaultExtension` | `string` | `".md"` | 新規ファイル作成時のデフォルト拡張子 |
 | `memoExplorer.dateFormat` | `string` | `"YYYY-MM-DD"` | デイリーノート作成時のファイル名日付書式 |
+| `memoExplorer.dailyFolder` | `string` | `""` | デイリーノートの作成先（保存先からの相対パス。空欄は直下） |
 
 ---
 
