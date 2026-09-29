@@ -4,7 +4,7 @@ VS Code / Cursorのサイドバーから、PC共通のMarkdownメモを作成・
 
 ## インストール
 
-1. `memo-explorer-0.1.0.vsix`を用意します（このプロジェクトでは `npm ci` → `npm run package` で生成できます）。
+1. [GitHub Releasesのv1.0.0](https://github.com/handism/util-tools/releases/tag/v1.0.0) から `memo-explorer-1.0.0.vsix` をダウンロードします。cloneやNode.jsのインストールは不要です。
 2. VS Code / Cursorの拡張機能画面の「…」から **VSIXからのインストール** を選択します。
 3. 左側のノートアイコンを開くと **MEMO EXPLORER** が表示されます。
 

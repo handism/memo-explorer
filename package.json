@@ -2,9 +2,10 @@
   "name": "memo-explorer",
   "displayName": "Memo Explorer",
   "description": "VS Code内でグローバルなMarkdownメモとObsidian Vaultを管理します。",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "publisher": "local-tools",
   "license": "UNLICENSED",
+  "repository": { "type": "git", "url": "https://github.com/handism/util-tools.git" },
   "engines": { "vscode": "^1.85.0" },
   "categories": ["Other"],
   "extensionKind": ["ui"],
@@ -17,7 +18,7 @@
     "test": "npm run compile && node --test out/test/core.test.js",
     "test:integration": "npm run compile && node scripts/integration.cjs",
     "vscode:prepublish": "npm run compile",
-    "package": "vsce package --allow-missing-repository --out memo-explorer-0.1.0.vsix"
+    "package": "vsce package"
   },
   "contributes": {
     "viewsContainers": { "activitybar": [{ "id": "memoExplorer", "title": "MEMO EXPLORER", "icon": "media/memo.svg" }] },
