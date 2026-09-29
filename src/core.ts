@@ -42,6 +42,10 @@ export function inside(root: string, target: string): boolean {
   return relative === '' || (!path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`));
 }
 export interface Entry { path: string; name: string; directory: boolean }
+export function topLevel(entries: Entry[]): Entry[] {
+  const unique = [...new Map(entries.map(e => [path.resolve(e.path), e])).values()];
+  return unique.filter(e => !unique.some(o => o !== e && o.directory && inside(o.path, e.path)));
+}
 export class MemoStore {
   constructor(readonly root: string, readonly defaultExtension = '.md') {}
   async initialize(): Promise<void> { await fs.mkdir(this.root, { recursive: true }); }
@@ -74,6 +78,26 @@ export class MemoStore {
     const target = path.join(directory, checkedName(name));
     await fs.mkdir(target);
     return target;
+  }
+  async planMove(sources: Entry[], directory: string): Promise<{ from: string; to: string }[]> {
+    await this.assertInside(directory);
+    const destination = path.resolve(directory);
+    const moves: { from: string; to: string }[] = [], names = new Set<string>();
+    for (const source of topLevel(sources)) {
+      const from = path.resolve(source.path);
+      await this.assertInside(from);
+      if (from === path.resolve(this.root)) throw new Error('保存先ルートは移動できません。');
+      if (source.directory && inside(from, destination)) throw new Error(`「${source.name}」をそれ自身またはその中へは移動できません。`);
+      if (path.dirname(from) === destination) continue;
+      const name = path.basename(from), key = name.toLowerCase();
+      if (names.has(key)) throw new Error(`同名の「${name}」が複数選択されています。`);
+      names.add(key);
+      const to = path.join(destination, name);
+      try { await fs.lstat(to); throw new Error(`移動先に「${name}」が既に存在します。`); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
+      moves.push({ from, to });
+    }
+    return moves;
   }
   async allFiles(): Promise<Entry[]> {
     const result: Entry[] = [], pending = [this.root];

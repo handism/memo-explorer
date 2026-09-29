@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { MemoStore, storagePath, noteName, validateName, formatDate, dailyContent, inside } from '../src/core';
+import { MemoStore, topLevel, storagePath, noteName, validateName, formatDate, dailyContent, inside } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
   assert.equal(storagePath('~/Documents/memo'), path.join(os.homedir(), 'Documents/memo'));
@@ -55,4 +55,33 @@ test('nested storage, file filtering, exclusive writes and daily preservation', 
   const custom = new MemoStore(store.root, '.log');
   await custom.createFile(store.root, 'extra.log');
   assert.ok((await custom.entries()).some(e => e.name === 'extra.log'));
+});
+test('move planning for drag and drop', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-move-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  const entry = (p: string, directory = false) => ({ path: p, name: path.basename(p), directory });
+  const a = entry(await store.createFolder(store.root, 'a'), true);
+  const b = entry(await store.createFolder(store.root, 'b'), true);
+  const child = entry(await store.createFolder(a.path, 'child'), true);
+  const inner = entry(await store.createFile(a.path, 'inner.md'));
+  const top = entry(await store.createFile(store.root, 'top.md'));
+  assert.deepEqual(await store.planMove([top, inner], b.path), [
+    { from: top.path, to: path.join(b.path, 'top.md') },
+    { from: inner.path, to: path.join(b.path, 'inner.md') }
+  ]);
+  assert.deepEqual(await store.planMove([a, inner, child], b.path), [{ from: a.path, to: path.join(b.path, 'a') }]);
+  assert.deepEqual(await store.planMove([top], store.root), []);
+  await assert.rejects(store.planMove([a], a.path));
+  await assert.rejects(store.planMove([a], child.path));
+  await store.createFile(b.path, 'top.md');
+  await assert.rejects(store.planMove([top], b.path));
+  await assert.rejects(store.planMove([top], root));
+  await assert.rejects(store.planMove([entry(store.root, true)], b.path));
+});
+test('top-level selection removes duplicates and nested entries', () => {
+  const entry = (p: string, directory = false) => ({ path: path.join('/memo', p), name: path.basename(p), directory });
+  const folder = entry('a', true);
+  assert.deepEqual(topLevel([entry('a/x.md'), folder, entry('a/b', true), entry('top.md'), entry('top.md'), entry('ab.md')]), [folder, entry('top.md'), entry('ab.md')]);
 });

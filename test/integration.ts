@@ -3,7 +3,7 @@ import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { MemoTree } from '../src/extension';
-import { formatDate } from '../src/core';
+import { formatDate, Entry } from '../src/core';
 
 async function waitFor(check: () => Promise<boolean>, description: string) {
   const deadline = Date.now() + 12000;
@@ -18,7 +18,7 @@ export async function run(): Promise<void> {
   assert.ok(root, 'isolated test root required');
   const ext = vscode.extensions.getExtension('local-tools.memo-explorer');
   assert.ok(ext);
-  const api = await ext.activate() as { tree: MemoTree };
+  const api = await ext.activate() as { tree: MemoTree; dragAndDrop: vscode.TreeDragAndDropController<Entry> };
   assert.equal(api.tree.store?.root, path.join(root, 'notes'));
   assert.ok((await fs.stat(api.tree.store!.root)).isDirectory());
   const commands = await vscode.commands.getCommands();
@@ -54,6 +54,26 @@ export async function run(): Promise<void> {
     await fs.unlink(children[0].path);
     await waitFor(async () => refreshes > before, 'external delete watcher');
     assert.equal((await api.tree.getChildren(folder)).length, 0);
+    const target = path.join(api.tree.store!.root, 'target');
+    await fs.mkdir(target);
+    const first = path.join(api.tree.store!.root, 'first.md'), second = path.join(nested, 'second.md');
+    await fs.writeFile(first, 'first'); await fs.writeFile(second, 'second');
+    const entry = (p: string, directory = false) => ({ path: p, name: path.basename(p), directory });
+    const drop = async (sources: ReturnType<typeof entry>[], destination?: ReturnType<typeof entry>) => {
+      const data = new vscode.DataTransfer();
+      await api.dragAndDrop.handleDrag!(sources, data, new vscode.CancellationTokenSource().token);
+      await api.dragAndDrop.handleDrop!(destination, data, new vscode.CancellationTokenSource().token);
+    };
+    await drop([entry(first), entry(second)], entry(target, true));
+    assert.equal(await fs.readFile(path.join(target, 'first.md'), 'utf8'), 'first');
+    assert.equal(await fs.readFile(path.join(target, 'second.md'), 'utf8'), 'second');
+    await assert.rejects(fs.access(first)); await assert.rejects(fs.access(second));
+    await drop([entry(target, true)], entry(path.join(target, 'first.md')));
+    assert.ok((await fs.stat(target)).isDirectory(), 'folder not moved into itself');
+    await drop([entry(path.join(target, 'first.md'))]);
+    assert.equal(await fs.readFile(first, 'utf8'), 'first');
+    await drop([entry(target, true)], entry(nested, true));
+    assert.equal(await fs.readFile(path.join(nested, 'target', 'second.md'), 'utf8'), 'second');
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(async () => api.tree.store?.root === switched, 'storage reconfiguration');
@@ -68,6 +88,6 @@ export async function run(): Promise<void> {
     await fs.writeFile(path.join(root, 'notes', 'old.md'), 'old root');
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
-    console.log('PASS integration: activation, commands, daily preservation, hierarchy, editor opening, external create/change/delete, storage switch, watcher disposal');
+    console.log('PASS integration: activation, commands, daily preservation, hierarchy, editor opening, drag and drop move, external create/change/delete, storage switch, watcher disposal');
   } finally { subscription.dispose(); }
 }
