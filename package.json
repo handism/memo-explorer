@@ -2,7 +2,7 @@
   "name": "memo-explorer",
   "displayName": "Memo Explorer",
   "description": "VS Code内でグローバルなMarkdownメモとObsidian Vaultを管理します。",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "publisher": "local-tools",
   "license": "UNLICENSED",
   "repository": { "type": "git", "url": "https://github.com/handism/util-tools.git" },
