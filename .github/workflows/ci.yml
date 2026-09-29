@@ -14,8 +14,8 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -27,7 +27,7 @@ jobs:
       - run: npm test
       - run: xvfb-run -a npm run test:integration
       - run: npx vsce package --skip-license --out memo-explorer-${{ steps.version.outputs.version }}.vsix
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: memo-explorer-vsix
           path: memo-explorer-${{ steps.version.outputs.version }}.vsix
@@ -36,7 +36,8 @@ jobs:
   release:
     needs: build
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    runs-on: ubuntu-latest
+    # gh CLI だけで済むため軽量ランナーで実行（統合テストのある build は Electron 用ライブラリが必要なため ubuntu-latest のまま）
+    runs-on: ubuntu-slim
     permissions:
       contents: write
     concurrency: release
@@ -54,7 +55,7 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
           fi
       - if: steps.check.outputs.exists == 'false'
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: memo-explorer-vsix
       - if: steps.check.outputs.exists == 'false'
