@@ -25,9 +25,15 @@ export function extension(value: string): string {
   if (!/^\.?[a-z0-9]+$/i.test(value)) throw new Error('デフォルト拡張子は .md などの英数字で指定してください。');
   return value.startsWith('.') ? value : `.${value}`;
 }
+export function isNote(name: string, suffix: string): boolean {
+  return new Set(['.md', '.markdown', '.txt', extension(suffix).toLowerCase()]).has(path.extname(name).toLowerCase());
+}
 export function noteName(value: string, suffix: string): string {
   checkedName(value);
-  return checkedName(path.extname(value) ? value : value + extension(suffix));
+  return checkedName(isNote(value, suffix) ? value : value + extension(suffix));
+}
+export function hiddenRename(name: string, directory: boolean, suffix: string): string | undefined {
+  return directory || isNote(name, suffix) ? undefined : name + extension(suffix);
 }
 export function notePath(value: string, suffix: string): { folders: string[]; name: string } {
   if (/[/\\]\s*$/.test(value)) throw new Error('ファイル名を入力してください。');
@@ -111,7 +117,7 @@ export class MemoStore {
     if (!inside(realRoot, realTarget)) throw new Error('保存先の外を指すリンクは操作できません。');
   }
   private note(name: string): boolean {
-    return new Set(['.md', '.markdown', '.txt', extension(this.defaultExtension).toLowerCase()]).has(path.extname(name).toLowerCase());
+    return isNote(name, this.defaultExtension);
   }
   listed(target: string): boolean {
     const relative = path.relative(this.root, target);

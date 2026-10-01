@@ -15,7 +15,9 @@ import {
   dailyPath,
   dailyContent,
   inside,
-  folderSegments
+  folderSegments,
+  isNote,
+  hiddenRename
 } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
@@ -30,8 +32,23 @@ test('portable names and configured extension', () => {
   assert.equal(noteName('会議', '.md'), '会議.md');
   assert.equal(noteName('memo', 'txt'), 'memo.txt');
   assert.equal(noteName('memo.txt', '.md'), 'memo.txt');
+  assert.equal(noteName('MEMO.Markdown', '.md'), 'MEMO.Markdown');
+  assert.equal(noteName('議事録 2026.09.29', '.md'), '議事録 2026.09.29.md');
+  assert.equal(noteName('v1.2', '.md'), 'v1.2.md');
+  assert.equal(noteName('data.json', '.md'), 'data.json.md');
+  assert.equal(noteName('app.log', '.log'), 'app.log');
+  assert.deepEqual(notePath('2026/議事録 09.29', '.md'), { folders: ['2026'], name: '議事録 09.29.md' });
   assert.throws(() => noteName('memo', '../md'));
   assert.equal(inside('/memo', '/memo-other'), false);
+});
+test('note extensions and renames that would hide a note', () => {
+  for (const name of ['a.md', 'a.MD', 'a.markdown', 'a.txt']) assert.equal(isNote(name, '.md'), true, name);
+  for (const name of ['a', 'a.json', 'v1.2']) assert.equal(isNote(name, '.md'), false, name);
+  assert.equal(isNote('a.log', 'log'), true);
+  assert.equal(hiddenRename('b.md', false, '.md'), undefined);
+  assert.equal(hiddenRename('b', false, '.md'), 'b.md');
+  assert.equal(hiddenRename('b.json', false, 'txt'), 'b.json.txt');
+  assert.equal(hiddenRename('folder.v2', true, '.md'), undefined);
 });
 test('local calendar date, custom tokens and templates', () => {
   const date = new Date(2026, 8, 9, 23, 59);

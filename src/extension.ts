@@ -12,7 +12,8 @@ import {
   checkedName,
   dailyPath,
   dailyContent,
-  folderSegments
+  folderSegments,
+  hiddenRename
 } from './core';
 
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
@@ -270,8 +271,20 @@ export async function activate(context: vscode.ExtensionContext) {
   register('memo.rename', async (store, argument) => {
     const entry = await choose(store, selected(argument));
     if (!entry) return;
-    const name = await vscode.window.showInputBox({ prompt: '新しい名前（拡張子を含む）', value: entry.name, validateInput: validateName });
+    let name = await vscode.window.showInputBox({ prompt: '新しい名前（拡張子を含む）', value: entry.name, validateInput: validateName });
     if (name === undefined || name === entry.name) return;
+    const fixed = hiddenRename(name, entry.directory, store.defaultExtension);
+    if (fixed) {
+      const answer = await vscode.window.showWarningMessage(
+        `「${name}」はメモ一覧に表示されない拡張子です。`,
+        { modal: true, detail: `「${fixed}」に変更すると一覧に表示されます。` },
+        `「${fixed}」に変更`,
+        'このまま変更'
+      );
+      if (!answer) return;
+      if (answer !== 'このまま変更') name = fixed;
+      if (name === entry.name) return;
+    }
     await store.assertInside(entry.path);
     const target = path.join(path.dirname(entry.path), checkedName(name));
     const edit = new vscode.WorkspaceEdit();
