@@ -109,6 +109,23 @@ export async function run(): Promise<void> {
     await fs.unlink(children[0].path);
     await waitFor(() => refreshes > before, 'external delete watcher');
     assert.equal((await api.tree.getChildren(folder)).length, 0);
+    await new Promise(resolve => setTimeout(resolve, 400));
+    before = refreshes;
+    await fs.mkdir(path.join(api.tree.store.root, '.obsidian'));
+    await fs.writeFile(path.join(api.tree.store.root, '.obsidian', 'workspace.json'), '{}');
+    await new Promise(resolve => setTimeout(resolve, 700));
+    assert.equal(refreshes, before, 'hidden folder changes do not refresh the tree');
+    let refreshed: (Entry | undefined)[] = [];
+    const partial = api.tree.onDidChangeTreeData(e => refreshed.push(e));
+    try {
+      await fs.writeFile(path.join(nested, 'partial.md'), 'partial');
+      await waitFor(() => refreshed.length > 0, 'partial refresh watcher');
+      assert.deepEqual(refreshed, [folder], 'only the changed folder is refreshed');
+      refreshed = [];
+    } finally {
+      partial.dispose();
+    }
+    await fs.unlink(path.join(nested, 'partial.md'));
     const target = path.join(api.tree.store.root, 'target');
     await fs.mkdir(target);
     const first = path.join(api.tree.store.root, 'first.md'),
@@ -132,6 +149,14 @@ export async function run(): Promise<void> {
     assert.equal(await fs.readFile(first, 'utf8'), 'first');
     await drop([entry(target, true)], entry(nested, true));
     assert.equal(await fs.readFile(path.join(nested, 'target', 'second.md'), 'utf8'), 'second');
+    const outside = path.join(root, 'outside');
+    await fs.mkdir(outside);
+    await fs.writeFile(path.join(outside, 'dropped.md'), 'dropped');
+    const external = new vscode.DataTransfer();
+    external.set('text/uri-list', new vscode.DataTransferItem(`${vscode.Uri.file(path.join(outside, 'dropped.md')).toString()}\r\n`));
+    await api.dragAndDrop.handleDrop!(entry(nested, true), external, new vscode.CancellationTokenSource().token);
+    assert.equal(await fs.readFile(path.join(nested, 'dropped.md'), 'utf8'), 'dropped', 'external drop copies into the folder');
+    assert.equal(await fs.readFile(path.join(outside, 'dropped.md'), 'utf8'), 'dropped', 'external source is kept');
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
@@ -147,7 +172,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy'
     );
   } finally {
     subscription.dispose();

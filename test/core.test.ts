@@ -65,6 +65,11 @@ test('local calendar date, custom tokens and templates', () => {
     '2026/09/28 07:05 Mon 2026-09-28 {{constructor}}'
   );
   assert.equal(dailyContent('{{weekday}}', new Date(2026, 8, 28), 'YYYY-MM-DD', 'ja'), '月');
+  assert.equal(
+    dailyContent('{{weekday}}', new Date(2026, 8, 28), 'YYYY-MM-DD', 'not a locale!'),
+    'Mon',
+    'invalid locale falls back to English'
+  );
 });
 test('daily note path tokens split into folders', () => {
   const date = new Date(2026, 8, 9);
@@ -171,6 +176,23 @@ test('full-text search across notes', async t => {
   assert.deepEqual(await store.search('a.b(d)'), []);
   assert.deepEqual(await store.search('  '), []);
   assert.deepEqual(await store.search('todo', 200, () => true), []);
+  assert.deepEqual(
+    (await store.search('  later ')).map(m => [m.column, m.length]),
+    [[5, 5]],
+    'surrounding spaces in the query are ignored'
+  );
+  await store.createFile(store.root, 'repeat.md', 'aa xx AA yy aa');
+  assert.deepEqual(
+    (await store.search('aa')).filter(m => m.entry.name === 'repeat.md').map(m => [m.column, m.length, m.count]),
+    [[0, 2, 3]],
+    'one item per line, counting every occurrence'
+  );
+  const files = (await store.allFiles()).filter(e => e.name === 'top.txt');
+  assert.deepEqual(
+    (await store.search('todo', 200, undefined, files)).map(m => m.entry.path),
+    [top],
+    'a given file list is used instead of walking the folders'
+  );
 });
 test('search reads many files and respects the limit', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-many-'));
@@ -234,4 +256,43 @@ test('top-level selection removes duplicates and nested entries', () => {
     entry('top.md'),
     entry('ab.md')
   ]);
+});
+test('copy planning for files dropped from outside', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-copy-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  const outside = path.join(root, 'outside');
+  await fs.mkdir(path.join(outside, 'folder'), { recursive: true });
+  for (const name of ['note.md', 'image.png', '.hidden.md']) await fs.writeFile(path.join(outside, name), name);
+  const sub = await store.createFolder(store.root, 'sub');
+  assert.deepEqual(await store.planCopy([path.join(outside, 'note.md'), path.join(outside, 'folder')], sub), [
+    { from: path.join(outside, 'note.md'), to: path.join(sub, 'note.md') },
+    { from: path.join(outside, 'folder'), to: path.join(sub, 'folder') }
+  ]);
+  await assert.rejects(store.planCopy([path.join(outside, 'image.png')], sub), /拡張子/);
+  await assert.rejects(store.planCopy([path.join(outside, '.hidden.md')], sub));
+  await assert.rejects(store.planCopy([path.join(outside, 'missing.md')], sub));
+  await assert.rejects(store.planCopy([path.join(outside, 'note.md')], outside), 'destination must be inside storage');
+  await assert.rejects(store.planCopy([store.root], sub), 'folder into itself');
+  await store.createFile(sub, 'note.md');
+  await assert.rejects(store.planCopy([path.join(outside, 'note.md')], sub), /既に存在/);
+  await fs.symlink(path.join(outside, 'note.md'), path.join(outside, 'link.md'));
+  await assert.rejects(store.planCopy([path.join(outside, 'link.md')], store.root), /リンク/);
+});
+test('hidden folders and links are not shown in the tree', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-visible-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  const note = await store.createFile(await store.createFolder(store.root, 'real'), 'note.md');
+  await fs.symlink(path.join(store.root, 'real'), path.join(store.root, 'linked'));
+  assert.equal(await store.visible(note), true);
+  assert.equal(store.listed(path.join(store.root, 'linked', 'note.md')), true);
+  assert.equal(await store.visible(path.join(store.root, 'linked', 'note.md')), false);
+  assert.equal(await store.visible(path.join(store.root, 'real', 'missing.md')), false);
+  assert.equal(store.ignored(path.join(store.root, '.obsidian', 'workspace.json')), true);
+  assert.equal(store.ignored(path.join(store.root, 'real', '.git')), true);
+  assert.equal(store.ignored(note), false);
+  assert.equal(store.ignored(path.join(root, '.elsewhere', 'x.md')), false, 'paths outside storage are not ignored');
 });

@@ -9,6 +9,22 @@ permissions:
   contents: read
 
 jobs:
+  # パス区切り・予約名・大文字小文字の扱いが OS ごとに異なるため、ユニットテストは3 OSで実行する
+  unit:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+
   build:
     runs-on: ubuntu-latest
     outputs:
@@ -35,7 +51,7 @@ jobs:
 
   # package.json のバージョンに対応する GitHub Release がまだ無ければ作成する（タグは自動で付く）
   release:
-    needs: build
+    needs: [unit, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     # gh CLI だけで済むため軽量ランナーで実行（統合テストのある build は Electron 用ライブラリが必要なため ubuntu-latest のまま）
     runs-on: ubuntu-slim

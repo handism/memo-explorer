@@ -97,6 +97,8 @@ export interface Match {
   line: number;
   column: number;
   length: number;
+  /** 同じ行での一致数。位置と長さは最初の一致を指す */
+  count: number;
   text: string;
 }
 export class ExistsError extends Error {
@@ -136,6 +138,30 @@ export class MemoStore {
   listed(target: string): boolean {
     const relative = path.relative(this.root, target);
     return !!relative && inside(this.root, target) && !relative.split(path.sep).some(s => s.startsWith('.')) && this.note(target);
+  }
+  /** .obsidian などの隠しフォルダ配下か。一覧に現れないため、ファイル監視で無視してよい */
+  ignored(target: string): boolean {
+    return (
+      inside(this.root, target) &&
+      path
+        .relative(this.root, target)
+        .split(path.sep)
+        .some(s => s.startsWith('.'))
+    );
+  }
+  /** 一覧に表示されるメモか。list() はシンボリックリンクを除外するため、途中にリンクを含むパスも表示されない */
+  async visible(target: string): Promise<boolean> {
+    if (!this.listed(target)) return false;
+    let current = this.root;
+    for (const segment of path.relative(this.root, target).split(path.sep)) {
+      current = path.join(current, segment);
+      try {
+        if ((await fs.lstat(current)).isSymbolicLink()) return false;
+      } catch {
+        return false;
+      }
+    }
+    return true;
   }
   async entries(directory = this.root): Promise<Entry[]> {
     await this.assertInside(directory);
@@ -202,15 +228,32 @@ export class MemoStore {
       if (names.has(key)) throw new Error(`同名の「${name}」が複数選択されています。`);
       names.add(key);
       const to = path.join(destination, name);
-      try {
-        await fs.lstat(to);
-        throw new Error(`移動先に「${name}」が既に存在します。`);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-      }
+      await absent(to, `移動先に「${name}」が既に存在します。`);
       moves.push({ from, to });
     }
     return moves;
+  }
+  /** OSのファイルマネージャなど、保存先の外からドロップされた項目のコピー先を決める */
+  async planCopy(sources: string[], directory: string): Promise<{ from: string; to: string }[]> {
+    await this.assertInside(directory);
+    const destination = path.resolve(directory);
+    const copies: { from: string; to: string }[] = [],
+      names = new Set<string>();
+    for (const source of sources) {
+      const from = path.resolve(source),
+        name = checkedName(path.basename(from)),
+        key = name.toLowerCase();
+      const stat = await fs.lstat(from);
+      if (stat.isSymbolicLink()) throw new Error(`「${name}」はリンクのため取り込めません。`);
+      if (stat.isDirectory() ? inside(from, destination) : !stat.isFile()) throw new Error(`「${name}」は取り込めません。`);
+      if (stat.isFile() && !this.note(name)) throw new Error(`「${name}」はメモとして扱えない拡張子のため取り込めません。`);
+      if (names.has(key)) throw new Error(`同名の「${name}」が複数選択されています。`);
+      names.add(key);
+      const to = path.join(destination, name);
+      await absent(to, `取り込み先に「${name}」が既に存在します。`);
+      copies.push({ from, to });
+    }
+    return copies;
   }
   async allFiles(): Promise<Entry[]> {
     // シンボリックリンクは list() で除外されるため、配下の確認はルートの1回で足りる
@@ -225,32 +268,49 @@ export class MemoStore {
     }
     return result;
   }
-  async search(query: string, limit = 200, cancelled = () => false): Promise<Match[]> {
+  /** files を渡すとフォルダの走査を省く。入力のたびに検索する場合は一覧を使い回す */
+  async search(query: string, limit = 200, cancelled = () => false, files?: Entry[] | Promise<Entry[]>): Promise<Match[]> {
     const result: Match[] = [];
-    if (!query.trim()) return result;
+    // 前後の空白は無視する。空白だけのクエリは検索しない
+    const trimmed = query.trim();
+    if (!trimmed) return result;
     // 正規表現で照合し、大文字・小文字の変換で文字数が変わっても元の行での位置と長さを返す
-    const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
+    const pattern = new RegExp(trimmed.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'giu');
     const read = async (entry: Entry): Promise<Match[]> => {
+      let handle: fs.FileHandle | undefined;
       try {
-        if ((await fs.stat(entry.path)).size > 2 * 1024 * 1024) return [];
+        // 開いたハンドルでサイズを確かめてから読み、パスの解決を1回で済ませる
+        handle = await fs.open(entry.path, 'r');
+        if ((await handle.stat()).size > 2 * 1024 * 1024) return [];
         const matches: Match[] = [];
         // VS Code は BOM を除いて開くため、除かないと1行目の列位置が1つずれる
-        (await fs.readFile(entry.path, 'utf8'))
+        (await handle.readFile('utf8'))
           .replace(/^\uFEFF/, '')
           .split(/\r?\n/)
           .forEach((text, line) => {
-            const found = pattern.exec(text);
-            if (found) matches.push({ entry, line, column: found.index, length: found[0].length, text });
+            const found = [...text.matchAll(pattern)];
+            if (found.length) matches.push({ entry, line, column: found[0].index, length: found[0][0].length, count: found.length, text });
           });
         return matches;
       } catch {
         return [];
+      } finally {
+        await handle?.close();
       }
     };
-    const files = await this.allFiles();
+    files = await (files ?? this.allFiles());
     for (let start = 0; start < files.length && result.length < limit && !cancelled(); start += 16) {
       for (const matches of await Promise.all(files.slice(start, start + 16).map(read))) result.push(...matches);
     }
     return cancelled() ? [] : result.slice(0, limit);
   }
+}
+async function absent(target: string, message: string): Promise<void> {
+  try {
+    await fs.lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw error;
+  }
+  throw new Error(message);
 }

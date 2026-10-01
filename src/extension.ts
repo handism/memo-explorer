@@ -13,7 +13,8 @@ import {
   dailyPath,
   dailyContent,
   folderSegments,
-  hiddenRename
+  hiddenRename,
+  inside
 } from './core';
 
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
@@ -22,9 +23,33 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   private readonly status = new vscode.EventEmitter<string | undefined>();
   /** 読み込みに失敗するとエラー内容を、ルートを読み込めると undefined を通知する */
   readonly onDidChangeStatus = this.status.event;
-  store?: MemoStore;
+  /** VS Code は要素をオブジェクトの同一性で識別するため、部分更新や reveal には getChildren で返したものと同じ Entry を渡す */
+  private readonly entries = new Map<string, Entry>();
+  private current?: MemoStore;
+  get store(): MemoStore | undefined {
+    return this.current;
+  }
+  set store(store: MemoStore | undefined) {
+    this.current = store;
+    this.entries.clear();
+  }
   refresh(): void {
     this.changed.fire(undefined);
+  }
+  /** フォルダの中身だけを読み直す。未表示のフォルダは次に展開したときに読まれるため何もしない */
+  refreshFolder(folder: string): void {
+    if (!this.store) return;
+    // 大文字・小文字の違いなどで保存先の配下と判定できないパスは、取りこぼさないよう全体を読み直す
+    if (path.resolve(folder) === this.store.root || !inside(this.store.root, folder)) return this.refresh();
+    const entry = this.entries.get(folder);
+    if (entry?.directory) this.changed.fire(entry);
+  }
+  entry(target: string, directory: boolean): Entry {
+    const existing = this.entries.get(target);
+    if (existing?.directory === directory) return existing;
+    const entry = { path: target, name: path.basename(target), directory };
+    this.entries.set(target, entry);
+    return entry;
   }
   getTreeItem(entry: Entry): vscode.TreeItem {
     const item = new vscode.TreeItem(
@@ -42,7 +67,7 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     try {
       const entries = await this.store.entries(entry?.path);
       if (!entry) this.status.fire(undefined);
-      return entries;
+      return entries.map(e => this.entry(e.path, e.directory));
     } catch (error) {
       this.status.fire(message(error));
       return [];
@@ -50,9 +75,7 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   }
   getParent(entry: Entry): Entry | undefined {
     const parent = path.dirname(entry.path);
-    return !this.store || parent === this.store.root || parent === entry.path
-      ? undefined
-      : { path: parent, name: path.basename(parent), directory: true };
+    return !this.store || parent === this.store.root || parent === entry.path ? undefined : this.entry(parent, true);
   }
   dispose(): void {
     this.changed.dispose();
@@ -84,24 +107,40 @@ export async function activate(context: vscode.ExtensionContext) {
     void vscode.window.showErrorMessage(`Memo Explorer: ${message(error)}`);
   };
   const mime = 'application/vnd.code.tree.memoexplorer.files';
+  const uriList = 'text/uri-list';
   const dragAndDrop: vscode.TreeDragAndDropController<Entry> = {
     dragMimeTypes: [mime],
-    dropMimeTypes: [mime],
+    dropMimeTypes: [mime, uriList],
     handleDrag(sources, data) {
       data.set(mime, new vscode.DataTransferItem(sources));
     },
     async handleDrop(target, data) {
       const sources = data.get(mime)?.value as Entry[] | undefined;
-      if (!sources?.length) return;
+      // ツリー内のドラッグは移動、OSのファイルマネージャやエクスプローラーからのドロップはコピーとして取り込む
+      const external = sources?.length
+        ? []
+        : ((await data.get(uriList)?.asString()) ?? '')
+            .split(/\r?\n/)
+            .filter(line => line && !line.startsWith('#'))
+            .map(line => vscode.Uri.parse(line))
+            .filter(uri => uri.scheme === 'file')
+            .map(uri => uri.fsPath);
+      if (!sources?.length && !external.length) return;
       try {
         await ready;
         const store = tree.store;
         if (!store) throw new Error('保存先の設定を確認してください。');
-        const moves = await store.planMove(sources, !target ? store.root : target.directory ? target.path : path.dirname(target.path));
-        if (!moves.length) return;
-        const edit = new vscode.WorkspaceEdit();
-        for (const move of moves) edit.renameFile(vscode.Uri.file(move.from), vscode.Uri.file(move.to), { overwrite: false });
-        if (!(await vscode.workspace.applyEdit(edit))) throw new Error('移動できませんでした。同名ファイルなどを確認してください。');
+        const destination = !target ? store.root : target.directory ? target.path : path.dirname(target.path);
+        if (sources?.length) {
+          const moves = await store.planMove(sources, destination);
+          if (!moves.length) return;
+          const edit = new vscode.WorkspaceEdit();
+          for (const move of moves) edit.renameFile(vscode.Uri.file(move.from), vscode.Uri.file(move.to), { overwrite: false });
+          if (!(await vscode.workspace.applyEdit(edit))) throw new Error('移動できませんでした。同名ファイルなどを確認してください。');
+        } else {
+          for (const copy of await store.planCopy(external, destination))
+            await vscode.workspace.fs.copy(vscode.Uri.file(copy.from), vscode.Uri.file(copy.to), { overwrite: false });
+        }
         tree.refresh();
       } catch (error) {
         report(error);
@@ -144,9 +183,16 @@ export async function activate(context: vscode.ExtensionContext) {
       view.description = store.root;
       view.message = undefined;
       watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(store.root), '**/*'));
-      const refresh = () => {
+      // 変化のあったフォルダだけを読み直す。.obsidian などの隠しフォルダ配下は一覧に出ないため無視する
+      const folders = new Set<string>();
+      const refresh = (uri: vscode.Uri) => {
+        if (store.ignored(uri.fsPath)) return;
+        folders.add(path.dirname(uri.fsPath));
         clearTimeout(timer);
-        timer = setTimeout(() => tree.refresh(), 100);
+        timer = setTimeout(() => {
+          for (const folder of folders) tree.refreshFolder(folder);
+          folders.clear();
+        }, 100);
       };
       watcher.onDidCreate(refresh);
       watcher.onDidDelete(refresh);
@@ -164,8 +210,14 @@ export async function activate(context: vscode.ExtensionContext) {
       uri = editor?.document.uri;
     if (!store || !view.visible || uri?.scheme !== 'file' || !store.listed(uri.fsPath) || !config().get<boolean>('autoReveal', true))
       return;
-    const entry = { path: uri.fsPath, name: path.basename(uri.fsPath), directory: false };
-    revealing = revealing.then(() => view.reveal(entry, { select: true, focus: false })).then(undefined, () => undefined);
+    const target = uri.fsPath;
+    revealing = revealing
+      .then(async () => {
+        // シンボリックリンク配下のメモはツリーに出ないため、表示を試みずに終える
+        if (tree.store === store && (await store.visible(target)))
+          await view.reveal(tree.entry(target, false), { select: true, focus: false });
+      })
+      .then(undefined, () => undefined);
   }
   const open = async (target: string, selection?: vscode.Range) =>
     vscode.window.showTextDocument(await vscode.workspace.openTextDocument(vscode.Uri.file(target)), { preview: false, selection });
@@ -184,7 +236,11 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   };
   const selected = (entry?: Entry) => entry ?? view.selection[0];
-  const directory = (store: MemoStore, entry?: Entry) => (entry?.directory ? entry.path : store.root);
+  /** 引数がなければツリーの選択を使い、ファイルが選ばれていればそのフォルダに作る */
+  const directory = (store: MemoStore, argument?: Entry) => {
+    const entry = selected(argument);
+    return !entry ? store.root : entry.directory ? entry.path : path.dirname(entry.path);
+  };
   async function choose(store: MemoStore, entry?: Entry): Promise<Entry | undefined> {
     if (entry) return entry;
     // 一覧の取得を待たずに開き、取得中はビジー表示にする
@@ -252,15 +308,19 @@ export async function activate(context: vscode.ExtensionContext) {
     pick.placeholder = 'メモ本文を検索（大文字・小文字を区別しません）';
     pick.matchOnDescription = true;
     let current = 0,
-      debounce: ReturnType<typeof setTimeout> | undefined;
+      debounce: ReturnType<typeof setTimeout> | undefined,
+      files: Promise<Entry[]> | undefined;
     const search = async (query: string, id: number) => {
       pick.busy = true;
       try {
-        const matches = await store.search(query, 200, () => id !== current);
+        // ファイル一覧は検索画面を開いている間だけ使い回し、入力のたびにフォルダを走査しない
+        files ??= store.allFiles();
+        files.catch(() => (files = undefined));
+        const matches = await store.search(query, 200, () => id !== current, files);
         if (id !== current) return;
         pick.items = matches.map(m => ({
           label: m.text.trim().slice(0, 200) || '(空行)',
-          description: `${path.relative(store.root, m.entry.path)}:${m.line + 1}`,
+          description: `${path.relative(store.root, m.entry.path)}:${m.line + 1}${m.count > 1 ? `（この行に${m.count}件）` : ''}`,
           alwaysShow: true,
           target: m.entry.path,
           range: new vscode.Range(m.line, m.column, m.line, m.column + m.length)
