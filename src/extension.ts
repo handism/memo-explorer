@@ -34,6 +34,8 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     this.entries.clear();
   }
   refresh(): void {
+    // 全体を読み直すと getChildren で作り直されるため、削除済みの項目を持ち越さない
+    this.entries.clear();
     this.changed.fire(undefined);
   }
   /** フォルダの中身だけを読み直す。未表示のフォルダは次に展開したときに読まれるため何もしない */
@@ -101,6 +103,8 @@ export async function activate(context: vscode.ExtensionContext) {
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let ready: Promise<void>;
+  /** 保存先のファイルの作成・削除。全文検索が使い回すファイル一覧を捨てる合図にする */
+  const filesChanged = new vscode.EventEmitter<void>();
   const config = () => vscode.workspace.getConfiguration('memoExplorer');
   const report = (error: unknown) => {
     output.appendLine(message(error));
@@ -138,8 +142,27 @@ export async function activate(context: vscode.ExtensionContext) {
           for (const move of moves) edit.renameFile(vscode.Uri.file(move.from), vscode.Uri.file(move.to), { overwrite: false });
           if (!(await vscode.workspace.applyEdit(edit))) throw new Error('移動できませんでした。同名ファイルなどを確認してください。');
         } else {
-          for (const copy of await store.planCopy(external, destination))
-            await vscode.workspace.fs.copy(vscode.Uri.file(copy.from), vscode.Uri.file(copy.to), { overwrite: false });
+          const plan = await store.planCopy(external, destination);
+          if (plan.files.length > 100) {
+            const answer = await vscode.window.showWarningMessage(
+              `${plan.files.length}件のメモを取り込みますか？`,
+              { modal: true, detail: path.relative(store.root, destination) || path.basename(store.root) },
+              '取り込む'
+            );
+            if (answer !== '取り込む') return;
+          }
+          try {
+            for (const folder of plan.folders) await vscode.workspace.fs.createDirectory(vscode.Uri.file(folder));
+            for (const copy of plan.files)
+              await vscode.workspace.fs.copy(vscode.Uri.file(copy.from), vscode.Uri.file(copy.to), { overwrite: false });
+          } finally {
+            tree.refresh();
+          }
+          if (plan.skipped)
+            void vscode.window.showInformationMessage(
+              `メモ以外の項目（隠しファイル・リンク・対応していない拡張子など）${plan.skipped}件は取り込みませんでした。`
+            );
+          return;
         }
         tree.refresh();
       } catch (error) {
@@ -173,8 +196,10 @@ export async function activate(context: vscode.ExtensionContext) {
     tree.refresh();
     view.message = '保存先を読み込み中…';
     try {
+      // Windows ではファイル監視やエディタから届くパスのドライブレターが小文字になるため、
+      // 同じ形に揃えておかないとツリーの項目と照合できない
       const store = new MemoStore(
-        storagePath(config().get<string>('storagePath', '~/Documents/memo')),
+        vscode.Uri.file(storagePath(config().get<string>('storagePath', '~/Documents/memo'))).fsPath,
         config().get<string>('defaultExtension', '.md')
       );
       await store.initialize();
@@ -187,6 +212,7 @@ export async function activate(context: vscode.ExtensionContext) {
       const folders = new Set<string>();
       const refresh = (uri: vscode.Uri) => {
         if (store.ignored(uri.fsPath)) return;
+        filesChanged.fire();
         folders.add(path.dirname(uri.fsPath));
         clearTimeout(timer);
         timer = setTimeout(() => {
@@ -268,7 +294,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       target = await store.createFile(await store.ensureFolder(folders, directory(store, entry)), file);
     } catch (error) {
-      if (!(error instanceof ExistsError) || !(await fs.lstat(error.target)).isFile()) throw error;
+      if (!(error instanceof ExistsError) || !(await fs.lstat(error.target).catch(() => undefined))?.isFile()) throw error;
       tree.refresh();
       if ((await vscode.window.showWarningMessage(`同名のメモ${error.message}`, '既存のメモを開く')) === '既存のメモを開く')
         await open(error.target);
@@ -310,6 +336,8 @@ export async function activate(context: vscode.ExtensionContext) {
     let current = 0,
       debounce: ReturnType<typeof setTimeout> | undefined,
       files: Promise<Entry[]> | undefined;
+    // 検索画面を開いている間にメモが増減したら、次の検索で一覧を取り直す
+    const changes = filesChanged.event(() => (files = undefined));
     const search = async (query: string, id: number) => {
       pick.busy = true;
       try {
@@ -346,6 +374,7 @@ export async function activate(context: vscode.ExtensionContext) {
         current++;
         clearTimeout(debounce);
         resolve(undefined);
+        changes.dispose();
         pick.dispose();
       });
     });
@@ -416,6 +445,7 @@ export async function activate(context: vscode.ExtensionContext) {
     tree,
     view,
     output,
+    filesChanged,
     vscode.commands.registerCommand('memo.refresh', () => {
       ready = configure();
       return ready;

@@ -3,7 +3,8 @@ const path = require('node:path');
 const os = require('node:os');
 const { runTests } = require('@vscode/test-electron');
 (async () => {
-  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-vscode-'));
+  // Windows の一時フォルダは短い名前（RUNNER~1 など）になることがあり、ファイル監視が返す正式なパスと一致しないため展開しておく
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'memo-vscode-')));
   const userData = path.join(root, 'user-data');
   await fs.mkdir(path.join(userData, 'User'), { recursive: true });
   await fs.writeFile(

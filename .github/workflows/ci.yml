@@ -9,8 +9,8 @@ permissions:
   contents: read
 
 jobs:
-  # パス区切り・予約名・大文字小文字の扱いが OS ごとに異なるため、ユニットテストは3 OSで実行する
-  unit:
+  # パス区切り・予約名・大文字小文字・ドライブレターの扱いが OS ごとに異なるため、テストは3 OSで実行する
+  test:
     strategy:
       fail-fast: false
       matrix:
@@ -24,6 +24,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      # Linux は画面がないため仮想ディスプレイ上で VS Code を起動する
+      - if: runner.os == 'Linux'
+        run: xvfb-run -a npm run test:integration
+      - if: runner.os != 'Linux'
+        run: npm run test:integration
 
   build:
     runs-on: ubuntu-latest
@@ -41,8 +46,6 @@ jobs:
       - run: npm run format:check
       - run: npm run typecheck
       - run: npm run lint
-      - run: npm test
-      - run: xvfb-run -a npm run test:integration
       - run: npx vsce package --skip-license --out memo-explorer-${{ steps.version.outputs.version }}.vsix
       - uses: actions/upload-artifact@v7
         with:
@@ -51,9 +54,9 @@ jobs:
 
   # package.json のバージョンに対応する GitHub Release がまだ無ければ作成する（タグは自動で付く）
   release:
-    needs: [unit, build]
+    needs: [test, build]
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    # gh CLI だけで済むため軽量ランナーで実行（統合テストのある build は Electron 用ライブラリが必要なため ubuntu-latest のまま）
+    # gh CLI だけで済むため軽量ランナーで実行
     runs-on: ubuntu-slim
     permissions:
       contents: write

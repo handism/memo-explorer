@@ -263,13 +263,25 @@ test('copy planning for files dropped from outside', async t => {
   const store = new MemoStore(path.join(root, 'vault'));
   await store.initialize();
   const outside = path.join(root, 'outside');
-  await fs.mkdir(path.join(outside, 'folder'), { recursive: true });
+  await fs.mkdir(path.join(outside, 'folder', 'nested'), { recursive: true });
+  await fs.mkdir(path.join(outside, 'folder', '.git'));
   for (const name of ['note.md', 'image.png', '.hidden.md']) await fs.writeFile(path.join(outside, name), name);
+  for (const name of ['inner.txt', 'photo.jpg', '.DS_Store', '.git/config', 'nested/deep.md'])
+    await fs.writeFile(path.join(outside, 'folder', name), name);
+  await fs.symlink(path.join(outside, 'note.md'), path.join(outside, 'folder', 'link.md'));
   const sub = await store.createFolder(store.root, 'sub');
-  assert.deepEqual(await store.planCopy([path.join(outside, 'note.md'), path.join(outside, 'folder')], sub), [
-    { from: path.join(outside, 'note.md'), to: path.join(sub, 'note.md') },
-    { from: path.join(outside, 'folder'), to: path.join(sub, 'folder') }
-  ]);
+  const plan = await store.planCopy([path.join(outside, 'note.md'), path.join(outside, 'folder')], sub);
+  assert.deepEqual(plan.folders, [path.join(sub, 'folder'), path.join(sub, 'folder', 'nested')]);
+  assert.deepEqual(
+    plan.files.sort((a, b) => a.to.localeCompare(b.to)),
+    [
+      { from: path.join(outside, 'folder', 'inner.txt'), to: path.join(sub, 'folder', 'inner.txt') },
+      { from: path.join(outside, 'folder', 'nested', 'deep.md'), to: path.join(sub, 'folder', 'nested', 'deep.md') },
+      { from: path.join(outside, 'note.md'), to: path.join(sub, 'note.md') }
+    ],
+    'only notes are copied from folders'
+  );
+  assert.equal(plan.skipped, 4, 'photo.jpg, .DS_Store, .git and link.md are skipped');
   await assert.rejects(store.planCopy([path.join(outside, 'image.png')], sub), /拡張子/);
   await assert.rejects(store.planCopy([path.join(outside, '.hidden.md')], sub));
   await assert.rejects(store.planCopy([path.join(outside, 'missing.md')], sub));

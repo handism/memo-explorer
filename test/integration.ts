@@ -14,8 +14,9 @@ async function waitFor(check: () => boolean | Promise<boolean>, description: str
   throw new Error(`Timed out: ${description}`);
 }
 export async function run(): Promise<void> {
-  const root = process.env.MEMO_TEST_ROOT!;
-  assert.ok(root, 'isolated test root required');
+  assert.ok(process.env.MEMO_TEST_ROOT, 'isolated test root required');
+  // ファイル監視やエディタと同じ形（Windows ではドライブレターが小文字）に揃えて比較する
+  const root = vscode.Uri.file(process.env.MEMO_TEST_ROOT).fsPath;
   const ext = vscode.extensions.getExtension('local-tools.memo-explorer');
   assert.ok(ext);
   const api = (await ext.activate()) as {
@@ -157,6 +158,16 @@ export async function run(): Promise<void> {
     await api.dragAndDrop.handleDrop!(entry(nested, true), external, new vscode.CancellationTokenSource().token);
     assert.equal(await fs.readFile(path.join(nested, 'dropped.md'), 'utf8'), 'dropped', 'external drop copies into the folder');
     assert.equal(await fs.readFile(path.join(outside, 'dropped.md'), 'utf8'), 'dropped', 'external source is kept');
+    const project = path.join(outside, 'project');
+    await fs.mkdir(path.join(project, '.git'), { recursive: true });
+    await fs.writeFile(path.join(project, '.git', 'HEAD'), 'ref');
+    await fs.writeFile(path.join(project, 'readme.md'), 'readme');
+    await fs.writeFile(path.join(project, 'logo.png'), 'png');
+    const folderDrop = new vscode.DataTransfer();
+    folderDrop.set('text/uri-list', new vscode.DataTransferItem(vscode.Uri.file(project).toString()));
+    await api.dragAndDrop.handleDrop!(undefined, folderDrop, new vscode.CancellationTokenSource().token);
+    assert.equal(await fs.readFile(path.join(api.tree.store.root, 'project', 'readme.md'), 'utf8'), 'readme');
+    assert.deepEqual(await fs.readdir(path.join(api.tree.store.root, 'project')), ['readme.md'], 'only notes are copied from folders');
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
@@ -172,7 +183,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering'
     );
   } finally {
     subscription.dispose();

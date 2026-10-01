@@ -101,6 +101,13 @@ export interface Match {
   count: number;
   text: string;
 }
+export interface CopyPlan {
+  /** 作成するフォルダ。親が先に並ぶ */
+  folders: string[];
+  files: { from: string; to: string }[];
+  /** 取り込まない項目（隠しファイル・リンク・メモ以外の拡張子など）の数 */
+  skipped: number;
+}
 export class ExistsError extends Error {
   constructor(
     readonly target: string,
@@ -233,12 +240,25 @@ export class MemoStore {
     }
     return moves;
   }
-  /** OSのファイルマネージャなど、保存先の外からドロップされた項目のコピー先を決める */
-  async planCopy(sources: string[], directory: string): Promise<{ from: string; to: string }[]> {
+  /**
+   * OSのファイルマネージャなど、保存先の外からドロップされた項目のコピー先を決める。
+   * フォルダは一覧に表示されるもの（メモとサブフォルダ）だけを取り込み、.git・画像・リンクなどは skipped に数える
+   */
+  async planCopy(sources: string[], directory: string): Promise<CopyPlan> {
     await this.assertInside(directory);
     const destination = path.resolve(directory);
-    const copies: { from: string; to: string }[] = [],
+    const plan: CopyPlan = { folders: [], files: [], skipped: 0 },
       names = new Set<string>();
+    const walk = async (from: string, to: string) => {
+      plan.folders.push(to);
+      for (const e of await fs.readdir(from, { withFileTypes: true })) {
+        const child = { from: path.join(from, e.name), to: path.join(to, e.name) };
+        if (e.name.startsWith('.') || e.isSymbolicLink() || validateName(e.name)) plan.skipped++;
+        else if (e.isDirectory()) await walk(child.from, child.to);
+        else if (e.isFile() && this.note(e.name)) plan.files.push(child);
+        else plan.skipped++;
+      }
+    };
     for (const source of sources) {
       const from = path.resolve(source),
         name = checkedName(path.basename(from)),
@@ -251,9 +271,10 @@ export class MemoStore {
       names.add(key);
       const to = path.join(destination, name);
       await absent(to, `取り込み先に「${name}」が既に存在します。`);
-      copies.push({ from, to });
+      if (stat.isDirectory()) await walk(from, to);
+      else plan.files.push({ from, to });
     }
-    return copies;
+    return plan;
   }
   async allFiles(): Promise<Entry[]> {
     // シンボリックリンクは list() で除外されるため、配下の確認はルートの1回で足りる
