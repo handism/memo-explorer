@@ -148,8 +148,32 @@ test('full-text search across notes', async t => {
     [6]
   );
   assert.equal((await store.search('todo', 1)).length, 1);
+  assert.deepEqual(
+    (await store.search('ToDo')).map(m => m.length),
+    [4, 4]
+  );
+  await store.createFile(store.root, 'unicode.md', 'xİstanbul と a.b(c)*');
+  const [unicode] = await store.search('STANBUL');
+  assert.deepEqual([unicode.column, unicode.length], [2, 7], 'position in the original line even if lowercasing changes length');
+  assert.deepEqual(
+    (await store.search('A.B(C)*')).map(m => [m.column, m.length]),
+    [[12, 7]],
+    'regex characters are literal'
+  );
+  assert.deepEqual(await store.search('a.b(d)'), []);
   assert.deepEqual(await store.search('  '), []);
   assert.deepEqual(await store.search('todo', 200, () => true), []);
+});
+test('search reads many files and respects the limit', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-many-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  const folder = await store.createFolder(store.root, 'sub');
+  for (let i = 0; i < 40; i++) await store.createFile(i % 2 ? folder : store.root, `note${i}.md`, `hit ${i}\nhit again`);
+  assert.equal((await store.search('hit')).length, 80);
+  assert.equal((await store.search('hit', 25)).length, 25);
+  assert.equal(new Set((await store.search('hit')).map(m => m.entry.path)).size, 40);
 });
 test('move planning for drag and drop', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-move-'));

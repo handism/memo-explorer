@@ -92,6 +92,7 @@ export interface Match {
   entry: Entry;
   line: number;
   column: number;
+  length: number;
   text: string;
 }
 export class ExistsError extends Error {
@@ -125,6 +126,9 @@ export class MemoStore {
   }
   async entries(directory = this.root): Promise<Entry[]> {
     await this.assertInside(directory);
+    return this.list(directory);
+  }
+  private async list(directory: string): Promise<Entry[]> {
     const entries = await fs.readdir(directory, { withFileTypes: true });
     return entries
       .filter(e => !e.name.startsWith('.') && !e.isSymbolicLink() && (e.isDirectory() || (e.isFile() && this.note(e.name))))
@@ -196,10 +200,12 @@ export class MemoStore {
     return moves;
   }
   async allFiles(): Promise<Entry[]> {
+    // シンボリックリンクは list() で除外されるため、配下の確認はルートの1回で足りる
+    await this.assertInside(this.root);
     const result: Entry[] = [],
       pending = [this.root];
     while (pending.length) {
-      for (const entry of await this.entries(pending.pop()!)) {
+      for (const entry of await this.list(pending.pop()!)) {
         if (entry.directory) pending.push(entry.path);
         else result.push(entry);
       }
@@ -207,23 +213,27 @@ export class MemoStore {
     return result;
   }
   async search(query: string, limit = 200, cancelled = () => false): Promise<Match[]> {
-    const needle = query.toLocaleLowerCase(),
-      result: Match[] = [];
-    if (!needle.trim()) return result;
-    for (const entry of await this.allFiles()) {
-      if (cancelled() || result.length >= limit) break;
-      let text: string;
+    const result: Match[] = [];
+    if (!query.trim()) return result;
+    // 正規表現で照合し、大文字・小文字の変換で文字数が変わっても元の行での位置と長さを返す
+    const pattern = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'iu');
+    const read = async (entry: Entry): Promise<Match[]> => {
       try {
-        text = (await fs.stat(entry.path)).size > 2 * 1024 * 1024 ? '' : await fs.readFile(entry.path, 'utf8');
+        if ((await fs.stat(entry.path)).size > 2 * 1024 * 1024) return [];
+        const matches: Match[] = [];
+        (await fs.readFile(entry.path, 'utf8')).split(/\r?\n/).forEach((text, line) => {
+          const found = pattern.exec(text);
+          if (found) matches.push({ entry, line, column: found.index, length: found[0].length, text });
+        });
+        return matches;
       } catch {
-        continue;
+        return [];
       }
-      const lines = text.split(/\r?\n/);
-      for (let line = 0; line < lines.length && result.length < limit; line++) {
-        const column = lines[line].toLocaleLowerCase().indexOf(needle);
-        if (column >= 0) result.push({ entry, line, column, text: lines[line] });
-      }
+    };
+    const files = await this.allFiles();
+    for (let start = 0; start < files.length && result.length < limit && !cancelled(); start += 16) {
+      for (const matches of await Promise.all(files.slice(start, start + 16).map(read))) result.push(...matches);
     }
-    return result;
+    return cancelled() ? [] : result.slice(0, limit);
   }
 }

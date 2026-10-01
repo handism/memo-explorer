@@ -19,6 +19,9 @@ import {
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
   private readonly changed = new vscode.EventEmitter<Entry | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  private readonly status = new vscode.EventEmitter<string | undefined>();
+  /** 読み込みに失敗するとエラー内容を、ルートを読み込めると undefined を通知する */
+  readonly onDidChangeStatus = this.status.event;
   store?: MemoStore;
   refresh(): void {
     this.changed.fire(undefined);
@@ -35,10 +38,13 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     return item;
   }
   async getChildren(entry?: Entry): Promise<Entry[]> {
+    if (!this.store) return [];
     try {
-      return this.store ? await this.store.entries(entry?.path) : [];
+      const entries = await this.store.entries(entry?.path);
+      if (!entry) this.status.fire(undefined);
+      return entries;
     } catch (error) {
-      void vscode.window.showErrorMessage(`Memo Explorer: ${message(error)}`);
+      this.status.fire(message(error));
       return [];
     }
   }
@@ -50,6 +56,7 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   }
   dispose(): void {
     this.changed.dispose();
+    this.status.dispose();
   }
 }
 function message(error: unknown): string {
@@ -99,11 +106,22 @@ export async function activate(context: vscode.ExtensionContext) {
     canSelectMany: true,
     dragAndDropController: dragAndDrop
   });
+  // ツリーの読み込みエラーは展開のたびに起き得るため、ダイアログではなくビュー上に表示する
+  let failure: string | undefined;
+  context.subscriptions.push(
+    tree.onDidChangeStatus(error => {
+      if (error === failure) return;
+      if (error) output.appendLine(error);
+      if (error || failure) view.message = error && `読み込めない項目があります。${error}`;
+      failure = error;
+    })
+  );
   async function configure(): Promise<void> {
     const current = ++generation;
     watcher?.dispose();
     watcher = undefined;
     clearTimeout(timer);
+    failure = undefined;
     tree.store = undefined;
     tree.refresh();
     view.message = '保存先を読み込み中…';
@@ -238,7 +256,7 @@ export async function activate(context: vscode.ExtensionContext) {
           description: `${path.relative(store.root, m.entry.path)}:${m.line + 1}`,
           alwaysShow: true,
           target: m.entry.path,
-          range: new vscode.Range(m.line, m.column, m.line, m.column + query.length)
+          range: new vscode.Range(m.line, m.column, m.line, m.column + m.length)
         }));
         if (!matches.length && query.trim()) pick.items = [{ label: '一致するメモはありません', alwaysShow: true }];
       } catch (error) {
