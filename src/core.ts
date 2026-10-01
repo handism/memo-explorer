@@ -12,6 +12,7 @@ export function validateName(value: string): string | undefined {
   if (!value || !value.trim()) return '名前を入力してください。';
   if (value.startsWith('.')) return 'ドットで始まる名前は一覧に表示されないため使用できません。';
   if (value !== value.trim() || /[. ]$/.test(value)) return '名前の前後の空白や末尾のドットは使用できません。';
+  // eslint-disable-next-line no-control-regex -- 制御文字はファイル名に使えないため意図的に検査する
   if (value === '.' || value === '..' || /[<>:"/\\|?*\x00-\x1f]/.test(value)) return 'パス区切りや使用できない文字が含まれています。';
   if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i.test(value)) return 'OSの予約名は使用できません。';
   if (Buffer.byteLength(value) > 240) return '名前が長すぎます（240バイト以内）。';
@@ -25,8 +26,11 @@ export function extension(value: string): string {
   if (!/^\.?[a-z0-9]+$/i.test(value)) throw new Error('デフォルト拡張子は .md などの英数字で指定してください。');
   return value.startsWith('.') ? value : `.${value}`;
 }
+function noteExtensions(suffix: string): Set<string> {
+  return new Set(['.md', '.markdown', '.txt', extension(suffix).toLowerCase()]);
+}
 export function isNote(name: string, suffix: string): boolean {
-  return new Set(['.md', '.markdown', '.txt', extension(suffix).toLowerCase()]).has(path.extname(name).toLowerCase());
+  return noteExtensions(suffix).has(path.extname(name).toLowerCase());
 }
 export function noteName(value: string, suffix: string): string {
   checkedName(value);
@@ -96,8 +100,11 @@ export interface Match {
   text: string;
 }
 export class ExistsError extends Error {
-  constructor(readonly target: string) {
-    super(`「${path.basename(target)}」は既に存在します。`);
+  constructor(
+    readonly target: string,
+    options?: ErrorOptions
+  ) {
+    super(`「${path.basename(target)}」は既に存在します。`, options);
   }
 }
 export function topLevel(entries: Entry[]): Entry[] {
@@ -105,10 +112,16 @@ export function topLevel(entries: Entry[]): Entry[] {
   return unique.filter(e => !unique.some(o => o !== e && o.directory && inside(o.path, e.path)));
 }
 export class MemoStore {
+  /** 先頭のドットを補った拡張子。不正な値はここで弾き、一覧表示の時点まで持ち越さない */
+  readonly defaultExtension: string;
+  private readonly noteExtensions: Set<string>;
   constructor(
     readonly root: string,
-    readonly defaultExtension = '.md'
-  ) {}
+    defaultExtension = '.md'
+  ) {
+    this.defaultExtension = extension(defaultExtension);
+    this.noteExtensions = noteExtensions(this.defaultExtension);
+  }
   async initialize(): Promise<void> {
     await fs.mkdir(this.root, { recursive: true });
   }
@@ -118,7 +131,7 @@ export class MemoStore {
     if (!inside(realRoot, realTarget)) throw new Error('保存先の外を指すリンクは操作できません。');
   }
   private note(name: string): boolean {
-    return isNote(name, this.defaultExtension);
+    return this.noteExtensions.has(path.extname(name).toLowerCase());
   }
   listed(target: string): boolean {
     const relative = path.relative(this.root, target);
@@ -142,9 +155,9 @@ export class MemoStore {
       await fs.writeFile(target, content, { flag: 'wx' });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
-      if (!existing) throw new ExistsError(target);
+      if (!existing) throw new ExistsError(target, { cause: error });
       await this.assertInside(target);
-      if (!(await fs.lstat(target)).isFile()) throw new Error('同名のフォルダまたはリンクが存在します。');
+      if (!(await fs.lstat(target)).isFile()) throw new Error('同名のフォルダまたはリンクが存在します。', { cause: error });
     }
     return target;
   }
@@ -154,7 +167,7 @@ export class MemoStore {
     try {
       await fs.mkdir(target);
     } catch (error) {
-      throw (error as NodeJS.ErrnoException).code === 'EEXIST' ? new ExistsError(target) : error;
+      throw (error as NodeJS.ErrnoException).code === 'EEXIST' ? new ExistsError(target, { cause: error }) : error;
     }
     return target;
   }
@@ -221,10 +234,14 @@ export class MemoStore {
       try {
         if ((await fs.stat(entry.path)).size > 2 * 1024 * 1024) return [];
         const matches: Match[] = [];
-        (await fs.readFile(entry.path, 'utf8')).split(/\r?\n/).forEach((text, line) => {
-          const found = pattern.exec(text);
-          if (found) matches.push({ entry, line, column: found.index, length: found[0].length, text });
-        });
+        // VS Code は BOM を除いて開くため、除かないと1行目の列位置が1つずれる
+        (await fs.readFile(entry.path, 'utf8'))
+          .replace(/^\uFEFF/, '')
+          .split(/\r?\n/)
+          .forEach((text, line) => {
+            const found = pattern.exec(text);
+            if (found) matches.push({ entry, line, column: found.index, length: found[0].length, text });
+          });
         return matches;
       } catch {
         return [];

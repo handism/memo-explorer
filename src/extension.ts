@@ -62,6 +62,14 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
+/** 設定値の解釈に失敗したとき、どの設定が原因かをエラー文に添える */
+function setting<T>(key: string, parse: () => T): T {
+  try {
+    return parse();
+  } catch (error) {
+    throw new Error(`設定 memoExplorer.${key} が不正です。${message(error)}`, { cause: error });
+  }
+}
 
 export async function activate(context: vscode.ExtensionContext) {
   const tree = new MemoTree();
@@ -179,13 +187,11 @@ export async function activate(context: vscode.ExtensionContext) {
   const directory = (store: MemoStore, entry?: Entry) => (entry?.directory ? entry.path : store.root);
   async function choose(store: MemoStore, entry?: Entry): Promise<Entry | undefined> {
     if (entry) return entry;
-    const items = await store.allFiles();
-    return (
-      await vscode.window.showQuickPick(
-        items.map(e => ({ label: e.name, description: path.relative(store.root, e.path), entry: e })),
-        { placeHolder: 'メモファイル名を入力', matchOnDescription: true }
-      )
-    )?.entry;
+    // 一覧の取得を待たずに開き、取得中はビジー表示にする
+    const items = store
+      .allFiles()
+      .then(files => files.map(e => ({ label: e.name, description: path.relative(store.root, e.path), entry: e })));
+    return (await vscode.window.showQuickPick(items, { placeHolder: 'メモファイル名を入力', matchOnDescription: true }))?.entry;
   }
   register('memo.createFile', async (store, entry) => {
     const name = await vscode.window.showInputBox({
@@ -224,11 +230,12 @@ export async function activate(context: vscode.ExtensionContext) {
   register('memo.createDaily', async store => {
     const now = new Date(),
       format = config().get<string>('dateFormat', 'YYYY-MM-DD');
-    const { folders, title } = dailyPath(now, format);
-    const folder = await store.ensureFolder([...folderSegments(config().get<string>('dailyFolder', '')), ...folders]);
+    const { folders, title } = setting('dateFormat', () => dailyPath(now, format));
+    const base = setting('dailyFolder', () => folderSegments(config().get<string>('dailyFolder', '')));
+    const folder = await store.ensureFolder([...base, ...folders]);
     const target = await store.createFile(
       folder,
-      checkedName(title + '.md'),
+      checkedName(title + store.defaultExtension),
       dailyContent(config().get<string>('dailyTemplate', ''), now, format, vscode.env.language),
       true
     );

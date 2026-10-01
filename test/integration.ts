@@ -5,7 +5,7 @@ import * as path from 'node:path';
 import { MemoTree } from '../src/extension';
 import { formatDate, Entry } from '../src/core';
 
-async function waitFor(check: () => Promise<boolean>, description: string) {
+async function waitFor(check: () => boolean | Promise<boolean>, description: string) {
   const deadline = Date.now() + 12000;
   while (Date.now() < deadline) {
     if (await check()) return;
@@ -24,7 +24,7 @@ export async function run(): Promise<void> {
     dragAndDrop: vscode.TreeDragAndDropController<Entry>;
   };
   assert.equal(api.tree.store?.root, path.join(root, 'notes'));
-  assert.ok((await fs.stat(api.tree.store!.root)).isDirectory());
+  assert.ok((await fs.stat(api.tree.store.root)).isDirectory());
   const commands = await vscode.commands.getCommands();
   for (const id of [
     'createFile',
@@ -39,7 +39,7 @@ export async function run(): Promise<void> {
     'settings'
   ])
     assert.ok(commands.includes(`memo.${id}`));
-  const keybindings = ext.packageJSON.contributes.keybindings as { command: string }[];
+  const keybindings = (ext.packageJSON as { contributes: { keybindings: { command: string }[] } }).contributes.keybindings;
   for (const id of ['memo.createDaily', 'memo.createFile', 'memo.search', 'memo.searchText', 'memoExplorer.files.focus'])
     assert.ok(
       keybindings.some(k => k.command === id),
@@ -50,7 +50,7 @@ export async function run(): Promise<void> {
   const subscription = api.tree.onDidChangeTreeData(() => refreshes++);
   try {
     await vscode.commands.executeCommand('memo.createDaily');
-    const daily = path.join(api.tree.store!.root, `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
+    const daily = path.join(api.tree.store.root, `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, daily);
     assert.ok((await fs.readFile(daily, 'utf8')).startsWith('# '));
     await fs.writeFile(daily, 'Do not replace this');
@@ -58,14 +58,14 @@ export async function run(): Promise<void> {
     assert.equal(await fs.readFile(daily, 'utf8'), 'Do not replace this');
     await vscode.workspace.getConfiguration('memoExplorer').update('dailyFolder', '日記/Daily', vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand('memo.createDaily');
-    const nestedDaily = path.join(api.tree.store!.root, '日記', 'Daily', `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
+    const nestedDaily = path.join(api.tree.store.root, '日記', 'Daily', `${formatDate(new Date(), 'YYYY-MM-DD')}.md`);
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, nestedDaily);
     assert.ok((await fs.readFile(nestedDaily, 'utf8')).startsWith('# '));
     await vscode.workspace.getConfiguration('memoExplorer').update('dateFormat', 'YYYY/MM/YYYY-MM-DD', vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand('memo.createDaily');
     const now = new Date();
     const tokenDaily = path.join(
-      api.tree.store!.root,
+      api.tree.store.root,
       '日記',
       'Daily',
       formatDate(now, 'YYYY'),
@@ -75,24 +75,30 @@ export async function run(): Promise<void> {
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, tokenDaily);
     assert.ok((await fs.readFile(tokenDaily, 'utf8')).startsWith(`# ${formatDate(now, 'YYYY/MM/YYYY-MM-DD')}`));
     await vscode.workspace.getConfiguration('memoExplorer').update('dateFormat', undefined, vscode.ConfigurationTarget.Global);
+    await vscode.workspace.getConfiguration('memoExplorer').update('defaultExtension', 'txt', vscode.ConfigurationTarget.Global);
+    await waitFor(() => api.tree.store?.defaultExtension === '.txt', 'extension reconfiguration');
+    await vscode.commands.executeCommand('memo.createDaily');
+    assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, nestedDaily.replace(/\.md$/, '.txt'));
+    await vscode.workspace.getConfiguration('memoExplorer').update('defaultExtension', undefined, vscode.ConfigurationTarget.Global);
+    await waitFor(() => api.tree.store?.defaultExtension === '.md', 'extension restored');
     await vscode.workspace.getConfiguration('memoExplorer').update('dailyFolder', undefined, vscode.ConfigurationTarget.Global);
     await vscode.commands.executeCommand('memoExplorer.files.focus');
-    await waitFor(async () => api.view.visible, 'tree view visible');
+    await waitFor(() => api.view.visible, 'tree view visible');
     await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(nestedDaily));
-    await waitFor(async () => api.view.selection[0]?.path === nestedDaily, 'auto reveal of active editor');
+    await waitFor(() => api.view.selection[0]?.path === nestedDaily, 'auto reveal of active editor');
     assert.equal(api.tree.getParent(api.view.selection[0])?.path, path.dirname(nestedDaily));
     const baseline = refreshes;
-    const nested = path.join(api.tree.store!.root, 'external');
+    const nested = path.join(api.tree.store.root, 'external');
     await fs.mkdir(nested);
     await fs.writeFile(path.join(nested, 'external.txt'), 'external');
-    await waitFor(async () => refreshes > baseline, 'external creation watcher');
+    await waitFor(() => refreshes > baseline, 'external creation watcher');
     const folder = (await api.tree.getChildren()).find(e => e.name === 'external');
     assert.ok(folder?.directory);
     const children = await api.tree.getChildren(folder);
     assert.equal(children[0].name, 'external.txt');
     const item = api.tree.getTreeItem(children[0]);
     assert.equal(item.iconPath, undefined, 'file icon theme applies via resourceUri');
-    await vscode.commands.executeCommand(item.command!.command, ...item.command!.arguments!);
+    await vscode.commands.executeCommand(item.command!.command, ...(item.command!.arguments! as unknown[]));
     assert.equal(vscode.window.activeTextEditor?.document.uri.fsPath, children[0].path);
     await new Promise(resolve => setTimeout(resolve, 400));
     let before = refreshes;
@@ -101,11 +107,11 @@ export async function run(): Promise<void> {
     assert.equal(refreshes, before, 'content changes do not refresh the tree');
     before = refreshes;
     await fs.unlink(children[0].path);
-    await waitFor(async () => refreshes > before, 'external delete watcher');
+    await waitFor(() => refreshes > before, 'external delete watcher');
     assert.equal((await api.tree.getChildren(folder)).length, 0);
-    const target = path.join(api.tree.store!.root, 'target');
+    const target = path.join(api.tree.store.root, 'target');
     await fs.mkdir(target);
-    const first = path.join(api.tree.store!.root, 'first.md'),
+    const first = path.join(api.tree.store.root, 'first.md'),
       second = path.join(nested, 'second.md');
     await fs.writeFile(first, 'first');
     await fs.writeFile(second, 'second');
@@ -128,12 +134,12 @@ export async function run(): Promise<void> {
     assert.equal(await fs.readFile(path.join(nested, 'target', 'second.md'), 'utf8'), 'second');
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
-    await waitFor(async () => api.tree.store?.root === switched, 'storage reconfiguration');
+    await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
     assert.deepEqual(await api.tree.getChildren(), []);
     await new Promise(resolve => setTimeout(resolve, 500));
     before = refreshes;
     await fs.writeFile(path.join(switched, 'new.md'), 'new');
-    await waitFor(async () => refreshes > before, 'new storage watcher');
+    await waitFor(() => refreshes > before, 'new storage watcher');
     assert.equal((await api.tree.getChildren())[0].name, 'new.md');
     await new Promise(resolve => setTimeout(resolve, 400));
     before = refreshes;
@@ -141,7 +147,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal'
     );
   } finally {
     subscription.dispose();

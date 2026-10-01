@@ -9,6 +9,7 @@ out/**/*.map
 tsconfig.json
 package-lock.json
 SPEC.md
+VALIDATION.md
 .gitignore
 **/*.vsix
 .git/**
@@ -21,4 +22,5 @@ SPEC.md
 .DS_Store
 .prettierrc.json
 .prettierignore
+eslint.config.mjs
 media/icon.svg

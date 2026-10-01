@@ -42,6 +42,7 @@
     "test": "npm run compile && node --test out/test/core.test.js",
     "test:integration": "npm run compile && node scripts/integration.cjs",
     "typecheck": "tsc -p . --noEmit",
+    "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "vscode:prepublish": "npm run compile",
@@ -257,11 +258,14 @@
     }
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^22.0.0",
     "@types/vscode": "1.85.0",
     "@vscode/test-electron": "^2.5.0",
     "@vscode/vsce": "^3.6.0",
+    "eslint": "^10.11.0",
     "prettier": "^3.9.9",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "typescript-eslint": "^8.71.0"
   }
 }

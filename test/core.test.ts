@@ -112,6 +112,8 @@ test('nested storage, file filtering, exclusive writes and daily preservation', 
   );
   await fs.symlink(daily, path.join(store.root, 'linked.md'));
   await assert.rejects(store.createFile(store.root, 'linked.md', '', true));
+  assert.equal(new MemoStore(store.root, 'txt').defaultExtension, '.txt');
+  for (const bad of ['md x', '../md', '']) assert.throws(() => new MemoStore(store.root, bad), bad);
   const custom = new MemoStore(store.root, '.log');
   await custom.createFile(store.root, 'extra.log');
   assert.ok((await custom.entries()).some(e => e.name === 'extra.log'));
@@ -159,6 +161,12 @@ test('full-text search across notes', async t => {
     (await store.search('A.B(C)*')).map(m => [m.column, m.length]),
     [[12, 7]],
     'regex characters are literal'
+  );
+  await store.createFile(store.root, 'bom.md', '\uFEFFx bom first line');
+  assert.deepEqual(
+    (await store.search('bom first')).map(m => [m.column, m.text]),
+    [[2, 'x bom first line']],
+    'BOM is stripped like VS Code does'
   );
   assert.deepEqual(await store.search('a.b(d)'), []);
   assert.deepEqual(await store.search('  '), []);
