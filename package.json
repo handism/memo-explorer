@@ -2,7 +2,7 @@
   "name": "memo-explorer",
   "displayName": "Memo Explorer",
   "description": "VS Code内でグローバルなMarkdownメモとObsidian Vaultを管理します。",
-  "version": "1.0.4",
+  "version": "1.1.0",
   "publisher": "local-tools",
   "license": "UNLICENSED",
   "icon": "media/icon.png",
