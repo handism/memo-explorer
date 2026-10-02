@@ -63,6 +63,10 @@
         {
           "id": "memoExplorer.files",
           "name": "MEMO EXPLORER"
+        },
+        {
+          "id": "memoExplorer.bookmarks",
+          "name": "ブックマーク"
         }
       ]
     },
@@ -119,6 +123,23 @@
         "category": "Memo Explorer"
       },
       {
+        "command": "memo.bookmark",
+        "title": "ブックマークに追加",
+        "category": "Memo Explorer",
+        "icon": "$(star-empty)"
+      },
+      {
+        "command": "memo.unbookmark",
+        "title": "ブックマークを解除",
+        "category": "Memo Explorer",
+        "icon": "$(star-full)"
+      },
+      {
+        "command": "memo.showInTree",
+        "title": "ツリーで表示",
+        "category": "Memo Explorer"
+      },
+      {
         "command": "memo.settings",
         "title": "設定を開く",
         "category": "Memo Explorer",
@@ -166,12 +187,12 @@
       "view/item/context": [
         {
           "command": "memo.createFile",
-          "when": "view == memoExplorer.files && viewItem == memoFolder",
+          "when": "view == memoExplorer.files && viewItem =~ /^memoFolder/",
           "group": "creation@1"
         },
         {
           "command": "memo.createFolder",
-          "when": "view == memoExplorer.files && viewItem == memoFolder",
+          "when": "view == memoExplorer.files && viewItem =~ /^memoFolder/",
           "group": "creation@2"
         },
         {
@@ -188,6 +209,42 @@
           "command": "memo.reveal",
           "when": "view == memoExplorer.files",
           "group": "reveal"
+        },
+        {
+          "command": "memo.bookmark",
+          "when": "view == memoExplorer.files && viewItem =~ /^memo(File|Folder)$/",
+          "group": "bookmark"
+        },
+        {
+          "command": "memo.unbookmark",
+          "when": "view == memoExplorer.files && viewItem =~ /\\.bookmarked$/",
+          "group": "bookmark"
+        },
+        {
+          "command": "memo.unbookmark",
+          "when": "view == memoExplorer.bookmarks",
+          "group": "inline"
+        },
+        {
+          "command": "memo.showInTree",
+          "when": "view == memoExplorer.bookmarks && viewItem != memoBookmark.missing",
+          "group": "navigation@1"
+        },
+        {
+          "command": "memo.unbookmark",
+          "when": "view == memoExplorer.bookmarks",
+          "group": "navigation@2"
+        },
+        {
+          "command": "memo.reveal",
+          "when": "view == memoExplorer.bookmarks && viewItem != memoBookmark.missing",
+          "group": "reveal"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "memo.showInTree",
+          "when": "false"
         }
       ]
     },
@@ -255,7 +312,13 @@
           "description": "エディタで開いたメモをツリービューで自動的に選択表示します。"
         }
       }
-    }
+    },
+    "viewsWelcome": [
+      {
+        "view": "memoExplorer.bookmarks",
+        "contents": "ブックマークはまだありません。\nメモやフォルダを右クリックして「ブックマークに追加」を選ぶと、ここからすぐに開けます。"
+      }
+    ]
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

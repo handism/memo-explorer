@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { MemoTree } from '../src/extension';
+import { MemoTree, BookmarkTree } from '../src/extension';
 import { formatDate, Entry } from '../src/core';
 
 async function waitFor(check: () => boolean | Promise<boolean>, description: string) {
@@ -23,6 +23,7 @@ export async function run(): Promise<void> {
     tree: MemoTree;
     view: vscode.TreeView<Entry>;
     dragAndDrop: vscode.TreeDragAndDropController<Entry>;
+    bookmarks: BookmarkTree;
   };
   assert.equal(api.tree.store?.root, path.join(root, 'notes'));
   assert.ok((await fs.stat(api.tree.store.root)).isDirectory());
@@ -37,7 +38,10 @@ export async function run(): Promise<void> {
     'rename',
     'delete',
     'reveal',
-    'settings'
+    'settings',
+    'bookmark',
+    'unbookmark',
+    'showInTree'
   ])
     assert.ok(commands.includes(`memo.${id}`));
   const keybindings = (ext.packageJSON as { contributes: { keybindings: { command: string }[] } }).contributes.keybindings;
@@ -168,10 +172,52 @@ export async function run(): Promise<void> {
     await api.dragAndDrop.handleDrop!(undefined, folderDrop, new vscode.CancellationTokenSource().token);
     assert.equal(await fs.readFile(path.join(api.tree.store.root, 'project', 'readme.md'), 'utf8'), 'readme');
     assert.deepEqual(await fs.readdir(path.join(api.tree.store.root, 'project')), ['readme.md'], 'only notes are copied from folders');
+    const marks = async () => (await api.bookmarks.getChildren()).map(b => [path.relative(api.tree.store!.root, b.path), b.missing]);
+    const memo = path.join(api.tree.store.root, 'memo.md'),
+      moved = path.join(nested, 'renamed.md');
+    await fs.writeFile(memo, 'memo');
+    await vscode.commands.executeCommand('memo.bookmark', entry(memo), [entry(memo), entry(nested, true)]);
+    assert.deepEqual(await marks(), [
+      ['memo.md', false],
+      ['external', false]
+    ]);
+    assert.equal(api.tree.getTreeItem(api.tree.entry(memo, false)).contextValue, 'memoFile.bookmarked');
+    assert.equal(api.tree.getTreeItem(api.tree.entry(first, false)).contextValue, 'memoFile');
+    await vscode.commands.executeCommand('memo.bookmark', entry(memo));
+    assert.equal((await marks()).length, 2, 'no duplicate bookmarks');
+    await drop([entry(memo)], entry(nested, true));
+    const rename = new vscode.WorkspaceEdit();
+    rename.renameFile(vscode.Uri.file(path.join(nested, 'memo.md')), vscode.Uri.file(moved));
+    assert.ok(await vscode.workspace.applyEdit(rename));
+    await waitFor(async () => (await marks())[0]?.[0] === path.join('external', 'renamed.md'), 'bookmark follows move and rename');
+    const parent = path.join(api.tree.store.root, 'parent');
+    await fs.mkdir(parent);
+    await drop([entry(nested, true)], entry(parent, true));
+    await waitFor(
+      async () =>
+        JSON.stringify(await marks()) ===
+        JSON.stringify([
+          [path.join('parent', 'external', 'renamed.md'), false],
+          [path.join('parent', 'external'), false]
+        ]),
+      'bookmarks inside a moved folder follow it'
+    );
+    const relocated = path.join(parent, 'external', 'renamed.md');
+    await fs.unlink(relocated);
+    await waitFor(async () => (await marks())[0]?.[1] === true, 'externally deleted bookmark shown as missing');
+    const [missing] = await api.bookmarks.getChildren();
+    assert.equal(api.bookmarks.getTreeItem(missing).contextValue, 'memoBookmark.missing');
+    await vscode.commands.executeCommand('memo.unbookmark', missing);
+    assert.deepEqual(await marks(), [[path.join('parent', 'external'), false]]);
+    await vscode.commands.executeCommand('memo.showInTree', (await api.bookmarks.getChildren())[0]);
+    await waitFor(() => api.view.selection[0]?.path === path.join(parent, 'external'), 'bookmarked folder revealed in tree');
+    const kept = api.bookmarks.all;
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
     assert.deepEqual(await api.tree.getChildren(), []);
+    assert.deepEqual(await api.bookmarks.getChildren(), [], 'bookmarks of another storage are hidden');
+    assert.deepEqual(api.bookmarks.all, kept, 'but kept for when the storage is switched back');
     await new Promise(resolve => setTimeout(resolve, 500));
     before = refreshes;
     await fs.writeFile(path.join(switched, 'new.md'), 'new');
@@ -183,7 +229,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering, bookmarks'
     );
   } finally {
     subscription.dispose();

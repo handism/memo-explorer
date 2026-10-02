@@ -14,7 +14,10 @@ import {
   dailyContent,
   folderSegments,
   hiddenRename,
-  inside
+  inside,
+  addBookmarks,
+  removeBookmarks,
+  renameBookmarks
 } from './core';
 
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
@@ -26,6 +29,8 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   /** VS Code は要素をオブジェクトの同一性で識別するため、部分更新や reveal には getChildren で返したものと同じ Entry を渡す */
   private readonly entries = new Map<string, Entry>();
   private current?: MemoStore;
+  /** ブックマーク済みか。右クリックメニューの「追加」「解除」の出し分けに使う */
+  bookmarked: (target: string) => boolean = () => false;
   get store(): MemoStore | undefined {
     return this.current;
   }
@@ -46,6 +51,11 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     const entry = this.entries.get(folder);
     if (entry?.directory) this.changed.fire(entry);
   }
+  /** 表示中の項目だけを描き直す。未表示の項目は次に表示したときに反映される */
+  refreshItem(target: string): void {
+    const entry = this.entries.get(target);
+    if (entry) this.changed.fire(entry);
+  }
   entry(target: string, directory: boolean): Entry {
     const existing = this.entries.get(target);
     if (existing?.directory === directory) return existing;
@@ -60,7 +70,7 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     );
     item.resourceUri = vscode.Uri.file(entry.path);
     item.id = entry.path;
-    item.contextValue = entry.directory ? 'memoFolder' : 'memoFile';
+    item.contextValue = (entry.directory ? 'memoFolder' : 'memoFile') + (this.bookmarked(entry.path) ? '.bookmarked' : '');
     if (!entry.directory) item.command = { command: 'vscode.open', title: 'メモを開く', arguments: [item.resourceUri, { preview: false }] };
     return item;
   }
@@ -84,6 +94,71 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
     this.status.dispose();
   }
 }
+export interface Bookmark {
+  path: string;
+  directory: boolean;
+  /** 外部での名前変更・削除などで見つからない。勝手に外さず、利用者が解除できるよう残しておく */
+  missing: boolean;
+}
+export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.Disposable {
+  private static readonly key = 'bookmarks';
+  private readonly changed = new vscode.EventEmitter<undefined>();
+  readonly onDidChangeTreeData = this.changed.event;
+  /** 表示する保存先。保存先を切り替えても、以前の保存先のブックマークは消さずに残す */
+  root?: string;
+  constructor(private readonly state: vscode.Memento) {}
+  /** 追加順に並んだ、全保存先のブックマーク */
+  get all(): string[] {
+    return this.state.get<string[]>(BookmarkTree.key, []);
+  }
+  has(target: string): boolean {
+    return this.all.includes(path.resolve(target));
+  }
+  /** 変化した項目を返す。メモツリー側の右クリックメニューを描き直すのに使う */
+  async update(change: (list: string[]) => string[]): Promise<string[]> {
+    const before = this.all,
+      after = change(before);
+    const diff = [...before.filter(b => !after.includes(b)), ...after.filter(b => !before.includes(b))];
+    if (!diff.length && after.every((b, i) => b === before[i])) return [];
+    await this.state.update(BookmarkTree.key, after);
+    this.refresh();
+    return diff;
+  }
+  refresh(): void {
+    this.changed.fire(undefined);
+  }
+  getTreeItem(bookmark: Bookmark): vscode.TreeItem {
+    const relative = this.root ? path.relative(this.root, bookmark.path) : bookmark.path,
+      folder = path.dirname(relative);
+    const item = new vscode.TreeItem(path.basename(bookmark.path), vscode.TreeItemCollapsibleState.None);
+    item.id = bookmark.path;
+    item.resourceUri = vscode.Uri.file(bookmark.path);
+    item.description = bookmark.missing ? '見つかりません' : folder === '.' ? undefined : folder;
+    item.tooltip = bookmark.missing ? `${relative}（名前の変更・移動・削除されたため見つかりません）` : relative;
+    item.contextValue = bookmark.missing ? 'memoBookmark.missing' : bookmark.directory ? 'memoBookmark.folder' : 'memoBookmark.file';
+    if (bookmark.missing) item.iconPath = new vscode.ThemeIcon('warning');
+    else if (bookmark.directory) {
+      item.iconPath = vscode.ThemeIcon.Folder;
+      item.command = { command: 'memo.showInTree', title: 'ツリーで表示', arguments: [bookmark] };
+    } else item.command = { command: 'vscode.open', title: 'メモを開く', arguments: [item.resourceUri, { preview: false }] };
+    return item;
+  }
+  async getChildren(bookmark?: Bookmark): Promise<Bookmark[]> {
+    const root = this.root;
+    if (bookmark || !root) return [];
+    return Promise.all(
+      this.all
+        .filter(target => target !== root && inside(root, target))
+        .map(async target => {
+          const stat = await fs.lstat(target).catch(() => undefined);
+          return { path: target, directory: !!stat?.isDirectory(), missing: !stat };
+        })
+    );
+  }
+  dispose(): void {
+    this.changed.dispose();
+  }
+}
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
@@ -98,6 +173,12 @@ function setting<T>(key: string, parse: () => T): T {
 
 export async function activate(context: vscode.ExtensionContext) {
   const tree = new MemoTree();
+  const bookmarks = new BookmarkTree(context.globalState);
+  tree.bookmarked = target => bookmarks.has(target);
+  /** ブックマークを変更し、メモツリーの右クリックメニューも追従させる */
+  const updateBookmarks = async (change: (list: string[]) => string[]) => {
+    for (const target of await bookmarks.update(change)) tree.refreshItem(target);
+  };
   const output = vscode.window.createOutputChannel('Memo Explorer');
   let watcher: vscode.FileSystemWatcher | undefined;
   let generation = 0;
@@ -176,6 +257,7 @@ export async function activate(context: vscode.ExtensionContext) {
     canSelectMany: true,
     dragAndDropController: dragAndDrop
   });
+  const bookmarkView = vscode.window.createTreeView('memoExplorer.bookmarks', { treeDataProvider: bookmarks, canSelectMany: true });
   // ツリーの読み込みエラーは展開のたびに起き得るため、ダイアログではなくビュー上に表示する
   let failure: string | undefined;
   context.subscriptions.push(
@@ -194,6 +276,8 @@ export async function activate(context: vscode.ExtensionContext) {
     failure = undefined;
     tree.store = undefined;
     tree.refresh();
+    bookmarks.root = undefined;
+    bookmarks.refresh();
     view.message = '保存先を読み込み中…';
     try {
       // Windows ではファイル監視やエディタから届くパスのドライブレターが小文字になるため、
@@ -205,6 +289,8 @@ export async function activate(context: vscode.ExtensionContext) {
       await store.initialize();
       if (current !== generation) return;
       tree.store = store;
+      bookmarks.root = store.root;
+      bookmarks.refresh();
       view.description = store.root;
       view.message = undefined;
       watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(store.root), '**/*'));
@@ -218,6 +304,8 @@ export async function activate(context: vscode.ExtensionContext) {
         timer = setTimeout(() => {
           for (const folder of folders) tree.refreshFolder(folder);
           folders.clear();
+          // 外部で消えた・戻ってきたブックマークの表示を更新する
+          bookmarks.refresh();
         }, 100);
       };
       watcher.onDidCreate(refresh);
@@ -262,6 +350,13 @@ export async function activate(context: vscode.ExtensionContext) {
     );
   };
   const selected = (entry?: Entry) => entry ?? view.selection[0];
+  /** 右クリックした項目が複数選択に含まれていれば選択全体を、含まれていなければその項目だけを対象にする */
+  const picked = <T extends { path: string }>(argument: T, all?: T[]) => (all?.some(e => e.path === argument.path) ? all : [argument]);
+  /** コマンドパレットから実行したときは、エディタで開いているメモを対象にする */
+  const activeNote = (store: MemoStore) => {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    return uri?.scheme === 'file' && store.listed(uri.fsPath) ? uri.fsPath : undefined;
+  };
   /** 引数がなければツリーの選択を使い、ファイルが選ばれていればそのフォルダに作る */
   const directory = (store: MemoStore, argument?: Entry) => {
     const entry = selected(argument);
@@ -407,14 +502,8 @@ export async function activate(context: vscode.ExtensionContext) {
     tree.refresh();
   });
   register('memo.delete', async (store, argument, all) => {
-    const picked = argument
-      ? all?.some(e => e.path === argument.path)
-        ? all
-        : [argument]
-      : view.selection.length
-        ? [...view.selection]
-        : [await choose(store)];
-    const entries = topLevel(picked.filter((e): e is Entry => !!e));
+    const targets = argument ? picked(argument, all) : view.selection.length ? [...view.selection] : [await choose(store)];
+    const entries = topLevel(targets.filter((e): e is Entry => !!e));
     if (!entries.length) return;
     const [first] = entries;
     const prompt =
@@ -429,11 +518,43 @@ export async function activate(context: vscode.ExtensionContext) {
       if (path.resolve(entry.path) === store.root) throw new Error('保存先ルートは削除できません。');
     }
     try {
-      for (const entry of entries)
+      for (const entry of entries) {
         await vscode.workspace.fs.delete(vscode.Uri.file(entry.path), { recursive: entry.directory, useTrash: true });
+        await updateBookmarks(list => removeBookmarks(list, [entry.path]));
+      }
     } finally {
       tree.refresh();
     }
+  });
+  register('memo.bookmark', async (store, argument, all) => {
+    const active = activeNote(store);
+    const targets = argument ? picked(argument, all).map(e => e.path) : active ? [active] : view.selection.map(e => e.path);
+    if (!targets.length) {
+      const entry = await choose(store);
+      if (entry) targets.push(entry.path);
+    }
+    for (const target of targets) await store.assertInside(target);
+    await updateBookmarks(list => addBookmarks(list, targets));
+  });
+  register('memo.unbookmark', async (store, argument, all) => {
+    const active = activeNote(store);
+    const targets = argument
+      ? picked(argument, all).map(e => e.path)
+      : bookmarkView.selection.length
+        ? bookmarkView.selection.map(b => b.path)
+        : active
+          ? [active]
+          : [];
+    // 解除だけはファイルの有無を問わない。見つからなくなったブックマークも外せるようにする
+    await updateBookmarks(list => list.filter(b => !targets.some(t => path.resolve(t) === b)));
+  });
+  register('memo.showInTree', async (store, argument) => {
+    const target = (argument ?? bookmarkView.selection[0])?.path;
+    if (!target) return;
+    const directory = !!(await fs.stat(target).catch(() => undefined))?.isDirectory();
+    if (!directory && !(await store.visible(target))) throw new Error('このメモはツリーに表示されていません。');
+    await vscode.commands.executeCommand('memoExplorer.files.focus');
+    await view.reveal(tree.entry(target, directory), { select: true, focus: true, expand: directory });
   });
   register('memo.reveal', async (store, argument) => {
     const entry = selected(argument);
@@ -444,6 +565,8 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     tree,
     view,
+    bookmarks,
+    bookmarkView,
     output,
     filesChanged,
     vscode.commands.registerCommand('memo.refresh', () => {
@@ -454,6 +577,18 @@ export async function activate(context: vscode.ExtensionContext) {
       vscode.commands.executeCommand('workbench.action.openSettings', '@ext:local-tools.memo-explorer')
     ),
     vscode.window.onDidChangeActiveTextEditor(editor => reveal(editor)),
+    // 名前の変更・ドラッグ&ドロップ（どちらも WorkspaceEdit）や、VS Code のエクスプローラーでの操作に追従する
+    vscode.workspace.onDidRenameFiles(event =>
+      updateBookmarks(list => event.files.reduce((l, f) => renameBookmarks(l, f.oldUri.fsPath, f.newUri.fsPath), list))
+    ),
+    vscode.workspace.onDidDeleteFiles(event =>
+      updateBookmarks(list =>
+        removeBookmarks(
+          list,
+          event.files.map(f => f.fsPath)
+        )
+      )
+    ),
     view.onDidChangeVisibility(() => reveal()),
     vscode.workspace.onDidChangeConfiguration(event => {
       if (event.affectsConfiguration('memoExplorer.storagePath') || event.affectsConfiguration('memoExplorer.defaultExtension'))
@@ -469,5 +604,5 @@ export async function activate(context: vscode.ExtensionContext) {
   );
   ready = configure();
   await ready;
-  return { tree, view, dragAndDrop };
+  return { tree, view, dragAndDrop, bookmarks, bookmarkView };
 }

@@ -120,6 +120,23 @@ export function topLevel(entries: Entry[]): Entry[] {
   const unique = [...new Map(entries.map(e => [path.resolve(e.path), e])).values()];
   return unique.filter(e => !unique.some(o => o !== e && o.directory && inside(o.path, e.path)));
 }
+/** ブックマークを追加順のまま末尾に足す。既にあるものは位置を変えない */
+export function addBookmarks(list: readonly string[], targets: readonly string[]): string[] {
+  const result = [...list];
+  for (const target of targets.map(t => path.resolve(t))) if (!result.includes(target)) result.push(target);
+  return result;
+}
+/** 対象と、フォルダならその配下のブックマークを外す */
+export function removeBookmarks(list: readonly string[], targets: readonly string[]): string[] {
+  const removed = targets.map(t => path.resolve(t));
+  return list.filter(b => !removed.some(t => inside(t, b)));
+}
+/** 名前の変更・移動に追従する。フォルダの場合は配下のブックマークも付け替える */
+export function renameBookmarks(list: readonly string[], from: string, to: string): string[] {
+  const source = path.resolve(from),
+    destination = path.resolve(to);
+  return [...new Set(list.map(b => (inside(source, b) ? path.join(destination, path.relative(source, b)) : b)))];
+}
 export class MemoStore {
   /** 先頭のドットを補った拡張子。不正な値はここで弾き、一覧表示の時点まで持ち越さない */
   readonly defaultExtension: string;

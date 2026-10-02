@@ -17,7 +17,10 @@ import {
   inside,
   folderSegments,
   isNote,
-  hiddenRename
+  hiddenRename,
+  addBookmarks,
+  removeBookmarks,
+  renameBookmarks
 } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
@@ -256,6 +259,21 @@ test('top-level selection removes duplicates and nested entries', () => {
     entry('top.md'),
     entry('ab.md')
   ]);
+});
+test('bookmarks keep order and follow renames and deletions', () => {
+  const p = (...s: string[]) => path.resolve('/memo', ...s);
+  let list = addBookmarks([], [p('b.md'), p('a', 'x.md')]);
+  list = addBookmarks(list, [p('b.md'), p('a')]);
+  assert.deepEqual(list, [p('b.md'), p('a', 'x.md'), p('a')], 'appended without duplicates');
+  assert.deepEqual(
+    renameBookmarks(list, p('a'), p('c', 'a')),
+    [p('b.md'), p('c', 'a', 'x.md'), p('c', 'a')],
+    'folder rename moves children'
+  );
+  assert.deepEqual(renameBookmarks(list, p('b.md'), p('a', 'x.md')), [p('a', 'x.md'), p('a')], 'collisions collapse');
+  assert.deepEqual(renameBookmarks([p('ab.md')], p('a'), p('z')), [p('ab.md')], 'sibling with shared prefix untouched');
+  assert.deepEqual(removeBookmarks(list, [p('a')]), [p('b.md')], 'folder deletion removes children');
+  assert.deepEqual(removeBookmarks(list, [p('b.md')]), [p('a', 'x.md'), p('a')]);
 });
 test('copy planning for files dropped from outside', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-copy-'));
