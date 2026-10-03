@@ -102,31 +102,84 @@ export interface Bookmark {
   missing: boolean;
 }
 export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.TreeDragAndDropController<Bookmark>, vscode.Disposable {
-  private static readonly key = 'bookmarks';
+  /** v1.1 までの保存場所。ファイルがまだ無いときだけ引き継ぐ */
+  private static readonly legacyKey = 'bookmarks';
   private static readonly mime = 'application/vnd.code.tree.memoexplorer.bookmarks';
   readonly dragMimeTypes = [BookmarkTree.mime];
   readonly dropMimeTypes = [BookmarkTree.mime];
   private readonly changed = new vscode.EventEmitter<undefined>();
   readonly onDidChangeTreeData = this.changed.event;
+  private readonly items = new vscode.EventEmitter<string[]>();
+  /** 追加・解除された項目を通知する。メモツリー側の右クリックメニューを描き直すのに使う */
+  readonly onDidChangeItems = this.items.event;
   /** 表示する保存先。保存先を切り替えても、以前の保存先のブックマークは消さずに残す */
   root?: string;
-  constructor(private readonly state: vscode.Memento) {}
+  private list: string[] = [];
+  /** 読み書きを1件ずつ順に行い、書き込み中の読み直しで古い一覧に戻らないようにする */
+  private queue = Promise.resolve();
+  /**
+   * globalState は短い間隔で書き込むと古い値に巻き戻ることがあるため、拡張機能の保存フォルダの JSON に保存する。
+   * 他のウィンドウでの変更を取りこぼさないよう、書き込む直前と表示のたびに読み直す
+   */
+  constructor(
+    private readonly file: string,
+    private readonly legacy?: vscode.Memento
+  ) {}
   /** 追加順に並んだ、全保存先のブックマーク */
   get all(): string[] {
-    return this.state.get<string[]>(BookmarkTree.key, []);
+    return [...this.list];
   }
   has(target: string): boolean {
-    return this.all.includes(path.resolve(target));
+    return this.list.includes(path.resolve(target));
   }
-  /** 変化した項目を返す。メモツリー側の右クリックメニューを描き直すのに使う */
-  async update(change: (list: string[]) => string[]): Promise<string[]> {
-    const before = this.all,
-      after = change(before);
+  load(): Promise<void> {
+    return this.enqueue(async () => void this.apply(await this.read(), false));
+  }
+  /** 変化した項目を返す */
+  update(change: (list: string[]) => string[]): Promise<string[]> {
+    return this.enqueue(async () => {
+      const before = await this.read(),
+        after = change(before);
+      if (after.length !== before.length || after.some((b, i) => b !== before[i])) await this.write(after);
+      return this.apply(after, true);
+    });
+  }
+  private enqueue<T>(task: () => Promise<T>): Promise<T> {
+    const run = this.queue.then(task);
+    this.queue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+  /** 表示中の一覧と比べて変化した項目を通知する */
+  private apply(after: string[], refresh: boolean): string[] {
+    const before = this.list;
+    this.list = after;
     const diff = [...before.filter(b => !after.includes(b)), ...after.filter(b => !before.includes(b))];
-    if (!diff.length && after.every((b, i) => b === before[i])) return [];
-    await this.state.update(BookmarkTree.key, after);
-    this.refresh();
+    if (diff.length) this.items.fire(diff);
+    if (refresh && (diff.length || after.some((b, i) => b !== before[i]))) this.refresh();
     return diff;
+  }
+  private async read(): Promise<string[]> {
+    let text: string;
+    try {
+      text = await fs.readFile(this.file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      return this.legacy?.get<string[]>(BookmarkTree.legacyKey, []) ?? [];
+    }
+    const value: unknown = JSON.parse(text);
+    if (!Array.isArray(value) || value.some(v => typeof v !== 'string'))
+      throw new Error(`ブックマークのファイルが壊れています。${this.file}`);
+    return value as string[];
+  }
+  private async write(list: string[]): Promise<void> {
+    await fs.mkdir(path.dirname(this.file), { recursive: true });
+    // 書き込み途中のファイルを他のウィンドウが読まないよう、別名で書いてから置き換える
+    const temporary = `${this.file}.${process.pid}.tmp`;
+    await fs.writeFile(temporary, JSON.stringify(list, undefined, 2));
+    await fs.rename(temporary, this.file);
   }
   refresh(): void {
     this.changed.fire(undefined);
@@ -158,8 +211,9 @@ export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.T
   async getChildren(bookmark?: Bookmark): Promise<Bookmark[]> {
     const root = this.root;
     if (bookmark || !root) return [];
+    await this.load().catch(() => undefined);
     return Promise.all(
-      this.all
+      this.list
         .filter(target => target !== root && inside(root, target))
         .map(async target => {
           const stat = await fs.lstat(target).catch(() => undefined);
@@ -169,6 +223,7 @@ export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.T
   }
   dispose(): void {
     this.changed.dispose();
+    this.items.dispose();
   }
 }
 function message(error: unknown): string {
@@ -185,13 +240,13 @@ function setting<T>(key: string, parse: () => T): T {
 
 export async function activate(context: vscode.ExtensionContext) {
   const tree = new MemoTree();
-  const bookmarks = new BookmarkTree(context.globalState);
+  const bookmarks = new BookmarkTree(path.join(context.globalStorageUri.fsPath, 'bookmarks.json'), context.globalState);
   tree.bookmarked = target => bookmarks.has(target);
-  /** ブックマークを変更し、メモツリーの右クリックメニューも追従させる */
-  const updateBookmarks = async (change: (list: string[]) => string[]) => {
-    for (const target of await bookmarks.update(change)) tree.refreshItem(target);
-  };
+  // メモツリーの右クリックメニュー（追加／解除）を追従させる
+  context.subscriptions.push(bookmarks.onDidChangeItems(targets => targets.forEach(t => tree.refreshItem(t))));
+  const updateBookmarks = (change: (list: string[]) => string[]) => bookmarks.update(change);
   const output = vscode.window.createOutputChannel('Memo Explorer');
+  await bookmarks.load().catch((error: unknown) => output.appendLine(message(error)));
   let watcher: vscode.FileSystemWatcher | undefined;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;

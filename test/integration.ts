@@ -244,6 +244,8 @@ export async function run(): Promise<void> {
       ['three.md', path.join('parent', 'external'), 'two.md']
     );
     const kept = api.bookmarks.all;
+    const saved = path.join(root, 'user-data', 'User', 'globalStorage', 'local-tools.memo-explorer', 'bookmarks.json');
+    assert.deepEqual(JSON.parse(await fs.readFile(saved, 'utf8')), kept, 'bookmarks are saved to a file');
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
