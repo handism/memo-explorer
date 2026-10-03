@@ -21,7 +21,8 @@ import {
   addBookmarks,
   removeBookmarks,
   renameBookmarks,
-  moveBookmarks
+  moveBookmarks,
+  maxSearchSize
 } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
@@ -208,6 +209,25 @@ test('search reads many files and respects the limit', async t => {
   assert.equal((await store.search('hit')).length, 80);
   assert.equal((await store.search('hit', 25)).length, 25);
   assert.equal(new Set((await store.search('hit')).map(m => m.entry.path)).size, 40);
+});
+test('all files follow the tree order and oversized notes are reported', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-order-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const store = new MemoStore(path.join(root, 'vault'));
+  await store.initialize();
+  for (const file of ['b/2.md', 'b/1.md', 'a/z/3.md', 'a/4.md', '5.md', 'c/6.md']) {
+    await fs.mkdir(path.join(store.root, path.dirname(file)), { recursive: true });
+    await fs.writeFile(path.join(store.root, file), 'hit');
+  }
+  assert.deepEqual(
+    (await store.allFiles()).map(e => path.relative(store.root, e.path).split(path.sep).join('/')),
+    ['5.md', 'a/4.md', 'a/z/3.md', 'b/1.md', 'b/2.md', 'c/6.md']
+  );
+  await fs.writeFile(path.join(store.root, 'large.md'), 'hit '.repeat(maxSearchSize / 4 + 1));
+  const skipped: string[] = [];
+  const matches = await store.search('hit', 200, undefined, undefined, e => skipped.push(e.name));
+  assert.equal(matches.length, 6);
+  assert.deepEqual(skipped, ['large.md']);
 });
 test('move planning for drag and drop', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-move-'));

@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as assert from 'node:assert/strict';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { MemoTree, BookmarkTree } from '../src/extension';
+import { MemoTree, BookmarkTree, BrokenBookmarksError, Bookmark } from '../src/extension';
 import { formatDate, Entry } from '../src/core';
 
 async function waitFor(check: () => boolean | Promise<boolean>, description: string) {
@@ -24,6 +24,7 @@ export async function run(): Promise<void> {
     view: vscode.TreeView<Entry>;
     dragAndDrop: vscode.TreeDragAndDropController<Entry>;
     bookmarks: BookmarkTree;
+    bookmarkView: vscode.TreeView<Bookmark>;
   };
   assert.equal(api.tree.store?.root, path.join(root, 'notes'));
   assert.ok((await fs.stat(api.tree.store.root)).isDirectory());
@@ -243,9 +244,50 @@ export async function run(): Promise<void> {
       (await marks()).map(m => m[0]),
       ['three.md', path.join('parent', 'external'), 'two.md']
     );
+    // メモツリーからドロップすると、ドロップ先の前に追加される
+    const fromTree = new vscode.DataTransfer();
+    await api.dragAndDrop.handleDrag!([entry(one)], fromTree, new vscode.CancellationTokenSource().token);
+    await api.bookmarks.handleDrop(
+      (await api.bookmarks.getChildren()).find(b => b.path === path.join(parent, 'external')),
+      fromTree
+    );
+    assert.deepEqual(
+      (await marks()).map(m => m[0]),
+      ['three.md', 'one.md', path.join('parent', 'external'), 'two.md'],
+      'dropped from the memo tree'
+    );
     const kept = api.bookmarks.all;
     const saved = path.join(root, 'user-data', 'User', 'globalStorage', 'local-tools.memo-explorer', 'bookmarks.json');
     assert.deepEqual(JSON.parse(await fs.readFile(saved, 'utf8')), kept, 'bookmarks are saved to a file');
+    // 壊れた保存ファイルはビュー上に表示し、最後に読めた一覧を残す
+    await fs.writeFile(saved, '{');
+    await api.bookmarks.getChildren();
+    await waitFor(() => !!api.bookmarkView.message?.includes(saved), 'broken bookmark file shown in the view');
+    assert.deepEqual(api.bookmarks.all, kept);
+    await fs.writeFile(saved, JSON.stringify(kept));
+    await api.bookmarks.getChildren();
+    await waitFor(() => api.bookmarkView.message === undefined, 'message cleared after the file is fixed');
+    // v1.1 までの globalState からの引き継ぎと、壊れたファイルの退避
+    const legacyFile = path.join(root, 'legacy', 'bookmarks.json');
+    const legacy = new BookmarkTree(legacyFile, { get: () => [memo], keys: () => [], update: () => Promise.resolve() });
+    try {
+      await legacy.load();
+      assert.deepEqual(legacy.all, [memo], 'legacy bookmarks are migrated');
+      await legacy.update(list => [...list, one]);
+      assert.deepEqual(JSON.parse(await fs.readFile(legacyFile, 'utf8')), [memo, one], 'migrated bookmarks are written to the file');
+      await fs.writeFile(legacyFile, '["not closed"');
+      await assert.rejects(legacy.load(), BrokenBookmarksError);
+      await assert.rejects(
+        legacy.update(list => list),
+        BrokenBookmarksError
+      );
+      const backup = await legacy.reset();
+      assert.equal(await fs.readFile(backup, 'utf8'), '["not closed"', 'broken file is kept');
+      assert.deepEqual(JSON.parse(await fs.readFile(legacyFile, 'utf8')), []);
+      assert.deepEqual(legacy.all, []);
+    } finally {
+      legacy.dispose();
+    }
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
     await waitFor(() => api.tree.store?.root === switched, 'storage reconfiguration');
@@ -263,7 +305,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering, bookmarks, bookmark reorder'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering, bookmarks, bookmark reorder, bookmark drop from tree, broken bookmark file, legacy bookmark migration'
     );
   } finally {
     subscription.dispose();

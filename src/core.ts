@@ -2,6 +2,9 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import * as fs from 'node:fs/promises';
 
+export function message(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
 export function storagePath(value: string): string {
   const expanded = value === '~' ? os.homedir() : /^~[/\\]/.test(value) ? path.join(os.homedir(), value.slice(2)) : value;
   if (!path.isAbsolute(expanded)) throw new Error('保存先には絶対パスまたは ~/ から始まるパスを指定してください。');
@@ -152,6 +155,8 @@ export function moveBookmarks(list: readonly string[], sources: readonly string[
   rest.splice(index, 0, ...moving);
   return rest;
 }
+/** 全文検索で読むファイルの上限サイズ */
+export const maxSearchSize = 2 * 1024 * 1024;
 export class MemoStore {
   /** 先頭のドットを補った拡張子。不正な値はここで弾き、一覧表示の時点まで持ち越さない */
   readonly defaultExtension: string;
@@ -313,16 +318,30 @@ export class MemoStore {
     await this.assertInside(this.root);
     const result: Entry[] = [],
       pending = [this.root];
+    // ツリーと同じ順（フォルダごとに名前順）に並べる。後から取り出すため、サブフォルダは逆順に積む
     while (pending.length) {
-      for (const entry of await this.list(pending.pop()!)) {
-        if (entry.directory) pending.push(entry.path);
-        else result.push(entry);
-      }
+      const entries = await this.list(pending.pop()!);
+      result.push(...entries.filter(e => !e.directory));
+      pending.push(
+        ...entries
+          .filter(e => e.directory)
+          .map(e => e.path)
+          .reverse()
+      );
     }
     return result;
   }
-  /** files を渡すとフォルダの走査を省く。入力のたびに検索する場合は一覧を使い回す */
-  async search(query: string, limit = 200, cancelled = () => false, files?: Entry[] | Promise<Entry[]>): Promise<Match[]> {
+  /**
+   * files を渡すとフォルダの走査を省く。入力のたびに検索する場合は一覧を使い回す。
+   * 大きすぎて読まなかったメモは skipped で知らせる
+   */
+  async search(
+    query: string,
+    limit = 200,
+    cancelled = () => false,
+    files?: Entry[] | Promise<Entry[]>,
+    skipped?: (entry: Entry) => void
+  ): Promise<Match[]> {
     const result: Match[] = [];
     // 前後の空白は無視する。空白だけのクエリは検索しない
     const trimmed = query.trim();
@@ -334,7 +353,10 @@ export class MemoStore {
       try {
         // 開いたハンドルでサイズを確かめてから読み、パスの解決を1回で済ませる
         handle = await fs.open(entry.path, 'r');
-        if ((await handle.stat()).size > 2 * 1024 * 1024) return [];
+        if ((await handle.stat()).size > maxSearchSize) {
+          skipped?.(entry);
+          return [];
+        }
         const matches: Match[] = [];
         // VS Code は BOM を除いて開くため、除かないと1行目の列位置が1つずれる
         (await handle.readFile('utf8'))
