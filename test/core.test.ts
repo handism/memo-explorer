@@ -20,7 +20,8 @@ import {
   hiddenRename,
   addBookmarks,
   removeBookmarks,
-  renameBookmarks
+  renameBookmarks,
+  moveBookmarks
 } from '../src/core';
 
 test('home expansion and absolute storage paths', () => {
@@ -274,6 +275,21 @@ test('bookmarks keep order and follow renames and deletions', () => {
   assert.deepEqual(renameBookmarks([p('ab.md')], p('a'), p('z')), [p('ab.md')], 'sibling with shared prefix untouched');
   assert.deepEqual(removeBookmarks(list, [p('a')]), [p('b.md')], 'folder deletion removes children');
   assert.deepEqual(removeBookmarks(list, [p('b.md')]), [p('a', 'x.md'), p('a')]);
+});
+test('bookmarks reorder by drag and drop', () => {
+  const p = (...s: string[]) => path.resolve('/memo', ...s);
+  const list = [p('a.md'), p('b.md'), p('c.md'), p('d.md')];
+  assert.deepEqual(moveBookmarks(list, [p('a.md')], p('c.md')), [p('b.md'), p('c.md'), p('a.md'), p('d.md')], 'down goes after');
+  assert.deepEqual(moveBookmarks(list, [p('d.md')], p('b.md')), [p('a.md'), p('d.md'), p('b.md'), p('c.md')], 'up goes before');
+  assert.deepEqual(moveBookmarks(list, [p('a.md')], p('b.md')), [p('b.md'), p('a.md'), p('c.md'), p('d.md')], 'swap neighbours');
+  assert.deepEqual(moveBookmarks(list, [p('b.md')]), [p('a.md'), p('c.md'), p('d.md'), p('b.md')], 'empty space moves to end');
+  assert.deepEqual(
+    moveBookmarks(list, [p('d.md'), p('a.md')], p('c.md')),
+    [p('b.md'), p('c.md'), p('a.md'), p('d.md')],
+    'multiple keep list order'
+  );
+  assert.deepEqual(moveBookmarks(list, [p('b.md'), p('c.md')], p('c.md')), list, 'dropped onto itself');
+  assert.deepEqual(moveBookmarks(list, [p('x.md')], p('a.md')), list, 'unknown sources ignored');
 });
 test('copy planning for files dropped from outside', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-copy-'));

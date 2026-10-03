@@ -211,6 +211,38 @@ export async function run(): Promise<void> {
     assert.deepEqual(await marks(), [[path.join('parent', 'external'), false]]);
     await vscode.commands.executeCommand('memo.showInTree', (await api.bookmarks.getChildren())[0]);
     await waitFor(() => api.view.selection[0]?.path === path.join(parent, 'external'), 'bookmarked folder revealed in tree');
+    const [one, two, three] = ['one.md', 'two.md', 'three.md'].map(n => path.join(api.tree.store!.root, n));
+    for (const file of [one, two, three]) await fs.writeFile(file, path.basename(file));
+    await vscode.commands.executeCommand('memo.bookmark', entry(one), [entry(one), entry(two), entry(three)]);
+    const reorder = async (sources: string[], target?: string) => {
+      const children = await api.bookmarks.getChildren();
+      const find = (p: string) => children.find(b => b.path === p)!;
+      const data = new vscode.DataTransfer();
+      api.bookmarks.handleDrag(sources.map(find), data);
+      await api.bookmarks.handleDrop(target === undefined ? undefined : find(target), data);
+    };
+    await reorder([one], three);
+    assert.deepEqual(await marks(), [
+      [path.join('parent', 'external'), false],
+      ['two.md', false],
+      ['three.md', false],
+      ['one.md', false]
+    ]);
+    await reorder([three], path.join(parent, 'external'));
+    await reorder([two]);
+    assert.deepEqual(await marks(), [
+      ['three.md', false],
+      [path.join('parent', 'external'), false],
+      ['one.md', false],
+      ['two.md', false]
+    ]);
+    // コマンドパレットからの解除は、エディタで開いているブックマーク済みのメモを対象にする
+    await vscode.commands.executeCommand('vscode.open', vscode.Uri.file(one));
+    await vscode.commands.executeCommand('memo.unbookmark');
+    assert.deepEqual(
+      (await marks()).map(m => m[0]),
+      ['three.md', path.join('parent', 'external'), 'two.md']
+    );
     const kept = api.bookmarks.all;
     const switched = path.join(root, 'other-notes');
     await vscode.workspace.getConfiguration('memoExplorer').update('storagePath', switched, vscode.ConfigurationTarget.Global);
@@ -229,7 +261,7 @@ export async function run(): Promise<void> {
     await new Promise(resolve => setTimeout(resolve, 700));
     assert.equal(refreshes, before, 'old watcher disposed');
     console.log(
-      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering, bookmarks'
+      'PASS integration: activation, commands, keybindings, daily preservation, daily folder, daily date folders, daily extension, auto reveal, file icons, hierarchy, editor opening, drag and drop move, external create/delete, no refresh on change, storage switch, watcher disposal, hidden folder ignore, partial refresh, external drop copy, external folder drop filtering, bookmarks, bookmark reorder'
     );
   } finally {
     subscription.dispose();

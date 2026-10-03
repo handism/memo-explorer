@@ -137,6 +137,21 @@ export function renameBookmarks(list: readonly string[], from: string, to: strin
     destination = path.resolve(to);
   return [...new Set(list.map(b => (inside(source, b) ? path.join(destination, path.relative(source, b)) : b)))];
 }
+/**
+ * ドラッグした項目を、ドロップ先の位置へまとめて移す。ドロップ先がなければ末尾へ。
+ * 下へ動かすときはドロップ先の後ろ、上へ動かすときは前に入れる。移す項目同士の順は保つ
+ */
+export function moveBookmarks(list: readonly string[], sources: readonly string[], target?: string): string[] {
+  const moved = sources.map(s => path.resolve(s));
+  const moving = list.filter(b => moved.includes(b));
+  if (!moving.length || (target !== undefined && moving.includes(target))) return [...list];
+  const rest = list.filter(b => !moving.includes(b));
+  let index = target === undefined ? -1 : rest.indexOf(target);
+  if (index < 0) index = rest.length;
+  else if (list.indexOf(moving[0]) < list.indexOf(target!)) index++;
+  rest.splice(index, 0, ...moving);
+  return rest;
+}
 export class MemoStore {
   /** 先頭のドットを補った拡張子。不正な値はここで弾き、一覧表示の時点まで持ち越さない */
   readonly defaultExtension: string;

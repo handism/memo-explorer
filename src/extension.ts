@@ -17,7 +17,8 @@ import {
   inside,
   addBookmarks,
   removeBookmarks,
-  renameBookmarks
+  renameBookmarks,
+  moveBookmarks
 } from './core';
 
 export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposable {
@@ -100,8 +101,11 @@ export interface Bookmark {
   /** 外部での名前変更・削除などで見つからない。勝手に外さず、利用者が解除できるよう残しておく */
   missing: boolean;
 }
-export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.Disposable {
+export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.TreeDragAndDropController<Bookmark>, vscode.Disposable {
   private static readonly key = 'bookmarks';
+  private static readonly mime = 'application/vnd.code.tree.memoexplorer.bookmarks';
+  readonly dragMimeTypes = [BookmarkTree.mime];
+  readonly dropMimeTypes = [BookmarkTree.mime];
   private readonly changed = new vscode.EventEmitter<undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   /** 表示する保存先。保存先を切り替えても、以前の保存先のブックマークは消さずに残す */
@@ -126,6 +130,14 @@ export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.D
   }
   refresh(): void {
     this.changed.fire(undefined);
+  }
+  handleDrag(sources: readonly Bookmark[], data: vscode.DataTransfer): void {
+    data.set(BookmarkTree.mime, new vscode.DataTransferItem(sources.map(b => b.path)));
+  }
+  /** ブックマーク同士の並べ替え。空白部分へのドロップは末尾へ移す */
+  async handleDrop(target: Bookmark | undefined, data: vscode.DataTransfer): Promise<void> {
+    const sources = data.get(BookmarkTree.mime)?.value as string[] | undefined;
+    if (sources?.length) await this.update(list => moveBookmarks(list, sources, target?.path));
   }
   getTreeItem(bookmark: Bookmark): vscode.TreeItem {
     const relative = this.root ? path.relative(this.root, bookmark.path) : bookmark.path,
@@ -232,10 +244,21 @@ export async function activate(context: vscode.ExtensionContext) {
             );
             if (answer !== '取り込む') return;
           }
+          let copied = 0;
           try {
             for (const folder of plan.folders) await vscode.workspace.fs.createDirectory(vscode.Uri.file(folder));
-            for (const copy of plan.files)
+            for (const copy of plan.files) {
               await vscode.workspace.fs.copy(vscode.Uri.file(copy.from), vscode.Uri.file(copy.to), { overwrite: false });
+              copied++;
+            }
+          } catch (error) {
+            // 取り込み済みのメモは消さずに残すため、どこまで進んだかを伝える
+            throw new Error(
+              `${plan.files.length}件中${copied}件を取り込んだところで中断しました（取り込み済みのメモは残っています）。${message(error)}`,
+              {
+                cause: error
+              }
+            );
           } finally {
             tree.refresh();
           }
@@ -257,7 +280,11 @@ export async function activate(context: vscode.ExtensionContext) {
     canSelectMany: true,
     dragAndDropController: dragAndDrop
   });
-  const bookmarkView = vscode.window.createTreeView('memoExplorer.bookmarks', { treeDataProvider: bookmarks, canSelectMany: true });
+  const bookmarkView = vscode.window.createTreeView('memoExplorer.bookmarks', {
+    treeDataProvider: bookmarks,
+    canSelectMany: true,
+    dragAndDropController: bookmarks
+  });
   // ツリーの読み込みエラーは展開のたびに起き得るため、ダイアログではなくビュー上に表示する
   let failure: string | undefined;
   context.subscriptions.push(
@@ -428,6 +455,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const pick = vscode.window.createQuickPick<Item>();
     pick.placeholder = 'メモ本文を検索（大文字・小文字を区別しません）';
     pick.matchOnDescription = true;
+    const limit = 200;
     let current = 0,
       debounce: ReturnType<typeof setTimeout> | undefined,
       files: Promise<Entry[]> | undefined;
@@ -439,16 +467,26 @@ export async function activate(context: vscode.ExtensionContext) {
         // ファイル一覧は検索画面を開いている間だけ使い回し、入力のたびにフォルダを走査しない
         files ??= store.allFiles();
         files.catch(() => (files = undefined));
-        const matches = await store.search(query, 200, () => id !== current, files);
+        // 1件多く探し、上限を超えたかどうかを判定する
+        const matches = await store.search(query, limit + 1, () => id !== current, files);
         if (id !== current) return;
-        pick.items = matches.map(m => ({
+        const items: Item[] = matches.slice(0, limit).map(m => ({
           label: m.text.trim().slice(0, 200) || '(空行)',
           description: `${path.relative(store.root, m.entry.path)}:${m.line + 1}${m.count > 1 ? `（この行に${m.count}件）` : ''}`,
           alwaysShow: true,
           target: m.entry.path,
           range: new vscode.Range(m.line, m.column, m.line, m.column + m.length)
         }));
-        if (!matches.length && query.trim()) pick.items = [{ label: '一致するメモはありません', alwaysShow: true }];
+        if (matches.length > limit)
+          items.push(
+            { label: '', kind: vscode.QuickPickItemKind.Separator, alwaysShow: true },
+            {
+              label: `$(info) 一致が${limit}件を超えたため、先頭の${limit}件だけを表示しています。語を足して絞り込んでください`,
+              alwaysShow: true
+            }
+          );
+        if (!matches.length && query.trim()) items.push({ label: '一致するメモはありません', alwaysShow: true });
+        pick.items = items;
       } catch (error) {
         report(error);
       } finally {
@@ -538,13 +576,12 @@ export async function activate(context: vscode.ExtensionContext) {
   });
   register('memo.unbookmark', async (store, argument, all) => {
     const active = activeNote(store);
+    // ビューの選択はフォーカスを外しても残るため、コマンドパレットからはエディタで開いているメモを優先する
     const targets = argument
       ? picked(argument, all).map(e => e.path)
-      : bookmarkView.selection.length
-        ? bookmarkView.selection.map(b => b.path)
-        : active
-          ? [active]
-          : [];
+      : active && bookmarks.has(active)
+        ? [active]
+        : bookmarkView.selection.map(b => b.path);
     // 解除だけはファイルの有無を問わない。見つからなくなったブックマークも外せるようにする
     await updateBookmarks(list => list.filter(b => !targets.some(t => path.resolve(t) === b)));
   });
