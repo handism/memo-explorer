@@ -210,8 +210,20 @@ export async function run(): Promise<void> {
     assert.equal(api.bookmarks.getTreeItem(missing).contextValue, 'memoBookmark.missing');
     await vscode.commands.executeCommand('memo.unbookmark', missing);
     assert.deepEqual(await marks(), [[path.join('parent', 'external'), false]]);
-    await vscode.commands.executeCommand('memo.showInTree', (await api.bookmarks.getChildren())[0]);
-    await waitFor(() => api.view.selection[0]?.path === path.join(parent, 'external'), 'bookmarked folder revealed in tree');
+    // ファイル監視による読み直しが reveal の途中に重なっても選択される（macOS の CI で起きていた）
+    const getChildren = api.tree.getChildren.bind(api.tree);
+    let interrupted = 0;
+    api.tree.getChildren = async (e?: Entry) => {
+      const children = await getChildren(e);
+      if (interrupted++ < 3) api.tree.refresh();
+      return children;
+    };
+    try {
+      await vscode.commands.executeCommand('memo.showInTree', (await api.bookmarks.getChildren())[0]);
+    } finally {
+      api.tree.getChildren = getChildren;
+    }
+    assert.equal(api.view.selection[0]?.path, path.join(parent, 'external'), 'bookmarked folder revealed in tree');
     const [one, two, three] = ['one.md', 'two.md', 'three.md'].map(n => path.join(api.tree.store!.root, n));
     for (const file of [one, two, three]) await fs.writeFile(file, path.basename(file));
     await vscode.commands.executeCommand('memo.bookmark', entry(one), [entry(one), entry(two), entry(three)]);

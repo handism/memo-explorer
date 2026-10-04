@@ -150,6 +150,19 @@ export async function activate(context: vscode.ExtensionContext) {
       report(error);
     }
   }
+  /** reveal の途中でツリーが読み直されると、エラーにならず選択もされないまま終わるため、読み直しと重ならなくなるまでやり直す */
+  async function revealEntry(target: string, directory: boolean, options: { select: boolean; focus: boolean; expand?: boolean }) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      let changed = false;
+      const listener = tree.onDidChangeTreeData(() => (changed = true));
+      try {
+        await view.reveal(tree.entry(target, directory), options);
+      } finally {
+        listener.dispose();
+      }
+      if (!changed) return;
+    }
+  }
   let revealing = Promise.resolve();
   function reveal(editor = vscode.window.activeTextEditor): void {
     const store = tree.store,
@@ -160,8 +173,7 @@ export async function activate(context: vscode.ExtensionContext) {
     revealing = revealing
       .then(async () => {
         // シンボリックリンク配下のメモはツリーに出ないため、表示を試みずに終える
-        if (tree.store === store && (await store.visible(target)))
-          await view.reveal(tree.entry(target, false), { select: true, focus: false });
+        if (tree.store === store && (await store.visible(target))) await revealEntry(target, false, { select: true, focus: false });
       })
       .then(undefined, () => undefined);
   }
@@ -345,7 +357,7 @@ export async function activate(context: vscode.ExtensionContext) {
     const directory = !!(await fs.stat(target).catch(() => undefined))?.isDirectory();
     if (!directory && !(await store.visible(target))) throw new Error('このメモはツリーに表示されていません。');
     await vscode.commands.executeCommand('memoExplorer.files.focus');
-    await view.reveal(tree.entry(target, directory), { select: true, focus: true, expand: directory });
+    await revealEntry(target, directory, { select: true, focus: true, expand: directory });
   });
   register('memo.reveal', async (store, argument) => {
     const target = (argument ?? fallback(store)[0])?.path ?? store.root;
