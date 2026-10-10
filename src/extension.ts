@@ -22,6 +22,8 @@ import {
 import { MemoTree, MemoDragAndDrop } from './memoTree';
 import { BookmarkTree, BrokenBookmarksError } from './bookmarkTree';
 import { searchText } from './searchText';
+import { FoundationModel, CancelledError } from './foundationModel';
+import { splitFrontmatter, existingKeys, createMetadata, mergeFrontmatter, frontmatterBlock, defaultCategories } from './metadata';
 
 export { MemoTree, MemoDragAndDrop } from './memoTree';
 export { BookmarkTree, BrokenBookmarksError, Bookmark } from './bookmarkTree';
@@ -277,6 +279,67 @@ export async function activate(context: vscode.ExtensionContext) {
   register('memo.searchText', async store => {
     const found = await searchText(store, filesChanged.event, report);
     if (found) await open(found.target, found.range);
+  });
+  const model = new FoundationModel();
+  // メニューの表示に使う。判定には数秒かかることがあるため、起動を待たせない
+  void model.available().then(ok => vscode.commands.executeCommand('setContext', 'memoExplorer.metadataAvailable', ok));
+  register('memo.generateMetadata', async (store, argument) => {
+    const entry = await choose(store, argument ?? fallback(store)[0]);
+    if (!entry) return;
+    if (entry.directory) throw new Error('メモを選んでください。');
+    if (!(await model.available()))
+      throw new Error(
+        'Apple Foundation Models を利用できません。Apple Intelligence 対応の macOS で、ターミナルの fm license で利用規約に同意してください。'
+      );
+    await store.assertInside(entry.path);
+    const categories = setting('metadata.categories', () => {
+      const value = config().get<unknown>('metadata.categories', defaultCategories);
+      if (!Array.isArray(value) || !value.every((v): v is string => typeof v === 'string' && !!v.trim()))
+        throw new Error('空でない文字列の配列で指定してください。');
+      return value.length ? value.map(v => v.trim()) : defaultCategories;
+    });
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.path));
+    await vscode.window.showTextDocument(document, { preview: false });
+    const { yaml, body } = splitFrontmatter(document.getText());
+    const existing = existingKeys(yaml);
+    let overwrite = false;
+    if (existing.length) {
+      const answer = await vscode.window.showWarningMessage(
+        `${existing.join('、')} は既にあります。`,
+        { modal: true, detail: 'tags は既存のタグに足します。' },
+        '上書きする',
+        '空の項目だけ追加'
+      );
+      if (!answer) return;
+      overwrite = answer === '上書きする';
+    }
+    const version = document.version;
+    let metadata;
+    try {
+      metadata = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `「${entry.name}」のメタデータを生成中…`, cancellable: true },
+        (_, token) => {
+          const abort = new AbortController();
+          token.onCancellationRequested(() => abort.abort());
+          return createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body, categories);
+        }
+      );
+    } catch (error) {
+      if (error instanceof CancelledError) return;
+      throw error;
+    }
+    // 生成中に編集されると位置がずれるため、反映せずにやり直してもらう
+    if (document.isClosed || document.version !== version)
+      throw new Error('生成中にメモが変更されたため反映しませんでした。もう一度実行してください。');
+    const current = splitFrontmatter(document.getText());
+    const block = frontmatterBlock(
+      mergeFrontmatter(current.yaml, metadata, overwrite),
+      document.eol === vscode.EndOfLine.CRLF ? '\r\n' : '\n'
+    );
+    const edit = new vscode.WorkspaceEdit();
+    edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(current.end)), block);
+    if (!(await vscode.workspace.applyEdit(edit))) throw new Error('メタデータを書き込めませんでした。');
+    void vscode.window.showInformationMessage('メタデータを追加しました。内容を確認して保存してください。');
   });
   register('memo.rename', async (store, argument) => {
     const entry = await choose(store, argument ?? fallback(store)[0]);

@@ -1,0 +1,164 @@
+import { test } from 'node:test';
+import * as assert from 'node:assert/strict';
+import * as fs from 'node:fs/promises';
+import * as os from 'node:os';
+import * as path from 'node:path';
+import {
+  splitFrontmatter,
+  existingKeys,
+  tagName,
+  normalizeMetadata,
+  mergeFrontmatter,
+  frontmatterBlock,
+  truncate,
+  createMetadata,
+  defaultCategories,
+  Metadata
+} from '../src/metadata';
+import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, ModelRequest } from '../src/foundationModel';
+
+const metadata: Metadata = {
+  title: 'ブックマークの保存方式',
+  tags: ['VS-Code', 'ブックマーク'],
+  summary: '保存方式をJSONファイルに切り替えた。',
+  category: '技術',
+  keywords: ['globalState', 'キュー']
+};
+
+test('frontmatter is split from the body', () => {
+  assert.deepEqual(splitFrontmatter('---\ntitle: a\n---\n本文'), { yaml: 'title: a', body: '本文', end: 17 });
+  assert.deepEqual(splitFrontmatter('---\r\ntitle: a\r\n---\r\n本文'), { yaml: 'title: a', body: '本文', end: 20 });
+  assert.deepEqual(splitFrontmatter('---\n---\n本文'), { yaml: '', body: '本文', end: 8 });
+  assert.deepEqual(splitFrontmatter('---\ntitle: a\n---'), { yaml: 'title: a', body: '', end: 16 });
+  // 閉じがない、または先頭にないものはフロントマターではない
+  assert.deepEqual(splitFrontmatter('---\n区切り線だけ'), { body: '---\n区切り線だけ', end: 0 });
+  assert.deepEqual(splitFrontmatter('本文\n---\na: 1\n---\n'), { body: '本文\n---\na: 1\n---\n', end: 0 });
+});
+
+test('existing keys need confirmation except tags', () => {
+  assert.deepEqual(existingKeys(undefined), []);
+  assert.deepEqual(existingKeys('title: a\ntags: [x]\nsummary: ""\ncategory:\nkeywords: []'), ['title']);
+  assert.throws(() => existingKeys('title: [a'), /解釈できません/);
+  assert.throws(() => existingKeys('- a\n- b'), /キーと値/);
+});
+
+test('tags follow Obsidian rules', () => {
+  assert.equal(tagName('VS Code'), 'VS-Code');
+  assert.equal(tagName('#Node.js'), 'Node-js');
+  assert.equal(tagName(' 問題  解決 '), '問題-解決');
+  assert.equal(tagName('project/memo'), 'project/memo');
+  assert.equal(tagName('2026'), undefined);
+  assert.equal(tagName('!!!'), undefined);
+});
+
+test('model output is validated and normalized', () => {
+  const result = normalizeMetadata(
+    {
+      title: ' タイトル\n改行 ',
+      tags: ['VS Code', 'vs-code', '2026', 'a', 'b', 'c', 'd', 'e', 'f'],
+      summary: '要約。',
+      category: '開発',
+      keywords: ['x', 'X', '', 1]
+    },
+    defaultCategories
+  );
+  assert.deepEqual(result, {
+    title: 'タイトル 改行',
+    tags: ['VS-Code', 'a', 'b', 'c', 'd', 'e'],
+    summary: '要約。',
+    category: 'その他',
+    keywords: ['x']
+  });
+  assert.equal(normalizeMetadata({ ...metadata, category: '未知' }, ['A', 'B']).category, 'B');
+  assert.throws(() => normalizeMetadata({ ...metadata, summary: '' }, defaultCategories), /要約/);
+  assert.throws(() => normalizeMetadata('text', defaultCategories), /解釈できません/);
+});
+
+test('metadata is merged without losing existing frontmatter', () => {
+  assert.equal(
+    mergeFrontmatter(undefined, metadata, false),
+    'tags:\n  - VS-Code\n  - ブックマーク\ntitle: ブックマークの保存方式\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\n'
+  );
+  // 既存のキー・コメント・順序は残し、タグは足す
+  const merged = mergeFrontmatter('# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n', metadata, false);
+  assert.equal(
+    merged,
+    '# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n  - ブックマーク\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\n'
+  );
+  assert.match(mergeFrontmatter('title: 手書き', metadata, true), /^title: ブックマークの保存方式$/m);
+  // 文字列のタグはリストにする
+  assert.match(mergeFrontmatter('tags: 設計, vs-code', metadata, false), /^tags:\n {2}- 設計\n {2}- vs-code\n {2}- ブックマーク\n/);
+  assert.equal(frontmatterBlock('a: 1\n', '\r\n'), '---\r\na: 1\r\n---\r\n');
+  assert.equal(frontmatterBlock(''), '---\n---\n');
+});
+
+test('long bodies are truncated on character boundaries', () => {
+  assert.deepEqual(truncate('abc', 3), { text: 'abc', truncated: false });
+  assert.deepEqual(truncate('ab😀c', 3), { text: 'ab', truncated: true });
+  assert.deepEqual(truncate('abcd', 3), { text: 'abc', truncated: true });
+});
+
+test('metadata generation retries with a shorter body when the context overflows', async () => {
+  const requests: ModelRequest[] = [];
+  const respond = (request: ModelRequest) => {
+    requests.push(request);
+    if (requests.length === 1) return Promise.reject(new ContextSizeError('too long'));
+    return Promise.resolve(JSON.stringify(metadata));
+  };
+  assert.deepEqual(await createMetadata(respond, 'メモ', 'あ'.repeat(100), defaultCategories, 80), metadata);
+  assert.deepEqual(
+    requests.map(r => r.text.length),
+    [80, 40]
+  );
+  assert.match(requests[0].prompt, /ファイル名「メモ」.*先頭の一部/);
+  assert.deepEqual((requests[0].schema as { properties: { category: { enum: string[] } } }).properties.category.enum, defaultCategories);
+  // 2回目も超えたら諦める
+  await assert.rejects(
+    createMetadata(() => Promise.reject(new ContextSizeError('too long')), 'メモ', 'あ', defaultCategories),
+    ContextSizeError
+  );
+  await assert.rejects(createMetadata(respond, 'メモ', ' \n', defaultCategories), /本文が空/);
+  await assert.rejects(
+    createMetadata(() => Promise.resolve('not json'), 'メモ', 'a', defaultCategories),
+    /解釈できません/
+  );
+});
+
+test('fm is called with arguments that survive hyphenated text', { skip: process.platform === 'win32' }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-fake-fm-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  const fake = async (name: string, script: string) => {
+    const file = path.join(directory, name);
+    await fs.writeFile(file, `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    return file;
+  };
+  const request = { schema: { type: 'object' }, instructions: '指示', text: '- 牛乳\n- 卵', prompt: 'プロンプト' };
+  // 引数をそのまま返す。スキーマは一時ファイルで渡す
+  const echo = new FoundationModel(
+    await fake('echo', 'for a in "$@"; do printf "%s|" "$a"; done; case "$3" in --schema=*) cat "${3#--schema=}";; esac')
+  );
+  assert.match(
+    await echo.respond(request),
+    /^respond\|--no-stream\|--schema=[^|]+schema\.json\|--instructions=指示\|--text=- 牛乳\n- 卵\|プロンプト\|\{"type":"object"\}$/
+  );
+  assert.equal(await echo.available(), true);
+  const overflow = new FoundationModel(
+    await fake('overflow', `echo "Error: The session's transcript exceeded the model's context size." >&2; exit 1`)
+  );
+  await assert.rejects(overflow.respond(request), ContextSizeError);
+  assert.equal(await overflow.available(), false);
+  await assert.rejects(
+    new FoundationModel(await fake('fail', 'echo "Error: guardrail" >&2; exit 1')).respond(request),
+    /エラーが発生しました。guardrail/
+  );
+  // 応答がなければ1回だけやり直す
+  const count = path.join(directory, 'count');
+  const slow = new FoundationModel(await fake('slow', `echo x >> "${count}"; sleep 5`), 300);
+  await assert.rejects(slow.respond(request), TimeoutError);
+  assert.equal((await fs.readFile(count, 'utf8')).trim().split('\n').length, 2);
+  const abort = new AbortController();
+  const pending = slow.respond(request, abort.signal);
+  abort.abort();
+  await assert.rejects(pending, CancelledError);
+  await assert.rejects(new FoundationModel(path.join(directory, 'missing')).respond(request), /見つかりません/);
+});

@@ -39,7 +39,7 @@
   "scripts": {
     "compile": "tsc -p .",
     "watch": "tsc -watch -p .",
-    "test": "npm run compile && node --test out/test/core.test.js",
+    "test": "npm run compile && node --test out/test/core.test.js out/test/metadata.test.js",
     "test:integration": "npm run compile && node scripts/integration.cjs",
     "typecheck": "tsc -p . --noEmit",
     "lint": "eslint .",
@@ -140,6 +140,12 @@
         "category": "Memo Explorer"
       },
       {
+        "command": "memo.generateMetadata",
+        "title": "メタデータを自動付与",
+        "category": "Memo Explorer",
+        "icon": "$(sparkle)"
+      },
+      {
         "command": "memo.settings",
         "title": "設定を開く",
         "category": "Memo Explorer",
@@ -211,6 +217,11 @@
           "group": "reveal"
         },
         {
+          "command": "memo.generateMetadata",
+          "when": "view == memoExplorer.files && viewItem =~ /^memoFile/ && memoExplorer.metadataAvailable",
+          "group": "metadata"
+        },
+        {
           "command": "memo.bookmark",
           "when": "view == memoExplorer.files && viewItem =~ /^memo(File|Folder)$/",
           "group": "bookmark"
@@ -242,6 +253,10 @@
         }
       ],
       "commandPalette": [
+        {
+          "command": "memo.generateMetadata",
+          "when": "memoExplorer.metadataAvailable"
+        },
         {
           "command": "memo.showInTree",
           "when": "false"
@@ -310,6 +325,23 @@
           "default": true,
           "scope": "application",
           "description": "エディタで開いたメモをツリービューで自動的に選択表示します。"
+        },
+        "memoExplorer.metadata.categories": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "minLength": 1
+          },
+          "default": [
+            "技術",
+            "仕事",
+            "学習",
+            "生活",
+            "アイデア",
+            "その他"
+          ],
+          "scope": "application",
+          "description": "メタデータの自動付与（macOS・Apple Intelligence）で category に使う候補。どれにも当てはまらないときは「その他」（なければ最後の候補）になります。"
         }
       }
     },
@@ -330,5 +362,8 @@
     "prettier": "^3.9.9",
     "typescript": "^5.9.0",
     "typescript-eslint": "^8.71.0"
+  },
+  "dependencies": {
+    "yaml": "^2.9.1"
   }
 }

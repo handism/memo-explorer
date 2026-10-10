@@ -17,7 +17,7 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 | 項目 | 仕様 |
 | :--- | :--- |
 | **拡張機能形式** | VSCode Extension (TypeScript) |
-| **対象プラットフォーム** | macOS / Windows / Linux (VSCode / Cursor) |
+| **対象プラットフォーム** | macOS / Windows / Linux (VSCode / Cursor)。メタデータの自動付与のみ macOS（Apple Intelligence 対応機） |
 | **メモ保存先** | **パターンA：PC共通グローバルフォルダ**<br>（デフォルト: `~/Documents/memo`、設定で変更可能） |
 | **管理フォーマット** | Markdown (`.md`) を主軸とし、テキストファイルも表示可能 |
 | **Obsidian親和性** | ObsidianのVaultフォルダを本拡張機能の保存先に指定することで、相互編集・共存が可能 |
@@ -87,6 +87,15 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 - 拡張機能・VS Code上での名前の変更・移動（`onDidRenameFiles`）に追従し、フォルダの場合は配下も付け替える。削除時は配下も含めて外す。
 - 外部アプリでの名前変更・削除は追えないため自動では外さず、「見つかりません」と表示して解除できるようにする。
 
+### 3.7 メタデータの自動付与（macOS・Apple Intelligence 対応機のみ）
+- `memo.generateMetadata`: メモ本文から `title` / `tags` / `summary` / `category` / `keywords` をオンデバイスの Apple Foundation Models（macOS 同梱の `/usr/bin/fm`）で生成し、YAMLフロントマターに追加する。メモの内容は端末の外へ送らない。ツリーのメモの右クリック、またはコマンドパレット（エディタで開いているメモが対象）から実行する。
+- 結果は保存せずにエディタへ反映する（`WorkspaceEdit`。保存前に確認でき、元に戻せる）。生成中にメモが変更された場合は反映しない。
+- 既存のフロントマターのキー・コメント・順序は残す。`tags` は既存のタグに足す（文字列で書かれたタグはリストにする）。`title`・`summary`・`category`・`keywords` が既にある場合は、上書きするか空の項目だけ追加するかを確認する。既存のフロントマターを解釈できない場合は変更しない。
+- タグは Obsidian の規則に合わせ、空白や記号を `-` に置き換えて `#` を外し、数字だけのものを除く。重複を除いて最大6個。キーワードは最大8個。`category` は `memoExplorer.metadata.categories` の候補から選ばせ（構造化出力の `enum`）、候補外なら「その他」（なければ最後の候補）にする。
+- 入力は本文の先頭約4,000文字（日本語のMarkdownは約2文字で1トークン、文脈長は約4,000トークン）。文脈長を超えた場合は半分に縮めて1回だけやり直す。本文は `--text=` の形で渡す（`--text 値` では `-` で始まる箇条書きがオプションとみなされる）。
+- 生成は1件ずつ順に行い、まれに応答が返らないことがあるため60秒で打ち切って1回だけやり直す。通知からキャンセルできる。
+- `fm available` で利用できない環境（macOS 以外、Apple Intelligence がオフなど）ではメニューとコマンドパレットに表示しない。
+
 ---
 
 ## 4. 機能要件
@@ -121,6 +130,7 @@ VSCodeのサイドバーに専用の「メモ一覧ツリービュー」を提�
 | `memoExplorer.dailyFolder` | `string` | `""` | デイリーノートの作成先（保存先からの相対パス。空欄は直下） |
 | `memoExplorer.dailyTemplate` | `string` | `""` | 新規デイリーノートの本文テンプレート |
 | `memoExplorer.autoReveal` | `boolean` | `true` | エディタで開いたメモをツリーで自動選択 |
+| `memoExplorer.metadata.categories` | `string[]` | `["技術", "仕事", "学習", "生活", "アイデア", "その他"]` | メタデータの自動付与で `category` に使う候補 |
 
 ---
 
