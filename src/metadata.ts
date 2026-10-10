@@ -2,7 +2,7 @@ import { parseDocument, isMap, isScalar, isSeq, Document } from 'yaml';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { ContextSizeError, ModelRequest } from './foundationModel';
-import { maxSearchSize } from './core';
+import { maxSearchSize, Entry } from './core';
 
 /** 自動付与するフロントマターのキー。この順で追加する */
 export const metadataKeys = ['title', 'tags', 'summary', 'category', 'keywords'] as const;
@@ -235,4 +235,76 @@ export async function addMetadataToFile(
     await fs.rm(temporary, { force: true });
     throw error;
   }
+}
+
+/** 検索に使うフロントマターの値 */
+export interface NoteMetadata {
+  tags: string[];
+  category?: string;
+  title?: string;
+  summary?: string;
+}
+/** フロントマターから検索用の値を読む。解釈できないフロントマターは値なしとして扱う */
+export function noteMetadata(text: string): NoteMetadata {
+  const doc = parseDocument(splitFrontmatter(text.replace(/^\uFEFF/, '')).yaml ?? '');
+  if (doc.errors.length || !isMap(doc.contents)) return { tags: [] };
+  const value = doc.get('tags', true);
+  const tags = isSeq(value)
+    ? value.items.map(item => String(isScalar(item) ? item.value : item))
+    : isScalar(value) && !empty(value)
+      ? String(value.value).split(/[,\s]+/)
+      : [];
+  const string = (key: string) => {
+    const item = doc.get(key);
+    return typeof item === 'string' && item.trim() ? item.trim() : undefined;
+  };
+  return {
+    tags: unique(
+      tags.map(t => t.trim().replace(/^#+/, '')),
+      Infinity
+    ),
+    category: string('category'),
+    title: string('title'),
+    summary: string('summary')
+  };
+}
+/** メモのフロントマターを読む。2MB超や読めないメモは除く */
+export async function readNotes(files: Entry[]): Promise<{ entry: Entry; metadata: NoteMetadata }[]> {
+  const result: { entry: Entry; metadata: NoteMetadata }[] = [];
+  for (let start = 0; start < files.length; start += 16) {
+    const batch = await Promise.all(
+      files.slice(start, start + 16).map(async entry => {
+        try {
+          const text = await read(entry.path);
+          return text === undefined ? undefined : { entry, metadata: noteMetadata(text) };
+        } catch {
+          return undefined;
+        }
+      })
+    );
+    for (const note of batch) if (note) result.push(note);
+  }
+  return result;
+}
+export interface Group<T> {
+  kind: 'category' | 'tag';
+  name: string;
+  notes: T[];
+}
+/** カテゴリ・タグごとにメモをまとめる。大文字・小文字は区別せず、件数の多い順（同数なら名前順）に並べる */
+export function groupNotes<T extends { metadata: NoteMetadata }>(notes: T[]): Group<T>[] {
+  const groups = new Map<string, Group<T>>();
+  const add = (kind: Group<T>['kind'], name: string, note: T) => {
+    const key = `${kind}:${name.toLowerCase()}`;
+    const group = groups.get(key) ?? { kind, name, notes: [] };
+    group.notes.push(note);
+    groups.set(key, group);
+  };
+  for (const note of notes) {
+    if (note.metadata.category) add('category', note.metadata.category, note);
+    for (const tag of note.metadata.tags) add('tag', tag, note);
+  }
+  return [...groups.values()].sort(
+    (a, b) => Number(a.kind === 'tag') - Number(b.kind === 'tag') || b.notes.length - a.notes.length || a.name.localeCompare(b.name)
+  );
 }

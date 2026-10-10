@@ -17,7 +17,10 @@ import {
   skipReason,
   markdown,
   fileSkipReason,
-  addMetadataToFile
+  addMetadataToFile,
+  noteMetadata,
+  readNotes,
+  groupNotes
 } from '../src/metadata';
 import { MemoStore, maxSearchSize } from '../src/core';
 import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, ModelRequest } from '../src/foundationModel';
@@ -253,4 +256,48 @@ test('all files can be listed from a subfolder', async t => {
     ['a/one.md', 'a/b/two.md'].map(p => path.normalize(p))
   );
   await assert.rejects(store.allFiles(os.tmpdir()), /保存先フォルダの外/);
+});
+
+test('search metadata is read leniently from frontmatter', () => {
+  assert.deepEqual(noteMetadata('---\ntitle: T\nsummary: S\ncategory: 技術\ntags:\n  - "#a"\n  - b\n  - A\n---\n本文'), {
+    tags: ['a', 'b'],
+    category: '技術',
+    title: 'T',
+    summary: 'S'
+  });
+  assert.deepEqual(noteMetadata('\uFEFF---\ntags: a, b c\ncategory: 1\n---\n').tags, ['a', 'b', 'c']);
+  assert.equal(noteMetadata('---\ncategory: 1\n---\n').category, undefined);
+  // 壊れたフロントマターやフロントマターなしは値なし
+  assert.deepEqual(noteMetadata('---\ntags: [a\n---\n'), { tags: [] });
+  assert.deepEqual(noteMetadata('本文 #tag'), { tags: [] });
+});
+
+test('notes are grouped by category and tag', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-tags-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const files = {
+    'a.md': '---\ncategory: 技術\ntags: [react, Hooks]\n---\n',
+    'b.md': '---\ncategory: 技術\ntags: [React]\n---\n',
+    'c.md': '---\ncategory: 生活\ntags: [買い物]\n---\n',
+    'd.md': '本文だけ'
+  };
+  for (const [name, text] of Object.entries(files)) await fs.writeFile(path.join(root, name), text);
+  await fs.writeFile(path.join(root, 'large.md'), Buffer.alloc(maxSearchSize + 1, 'a'));
+  const notes = await readNotes(
+    [...Object.keys(files), 'large.md', 'missing.md'].map(name => ({ path: path.join(root, name), name, directory: false }))
+  );
+  assert.deepEqual(
+    notes.map(n => n.entry.name),
+    ['a.md', 'b.md', 'c.md', 'd.md']
+  );
+  assert.deepEqual(
+    groupNotes(notes).map(g => [g.kind, g.name, g.notes.map(n => n.entry.name).join()]),
+    [
+      ['category', '技術', 'a.md,b.md'],
+      ['category', '生活', 'c.md'],
+      ['tag', 'react', 'a.md,b.md'],
+      ['tag', 'Hooks', 'a.md'],
+      ['tag', '買い物', 'c.md']
+    ]
+  );
 });

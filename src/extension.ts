@@ -32,6 +32,8 @@ import {
   defaultCategories,
   addMetadataToFile,
   fileSkipReason,
+  readNotes,
+  groupNotes,
   markdown,
   Skip
 } from './metadata';
@@ -444,6 +446,36 @@ export async function activate(context: vscode.ExtensionContext) {
     edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(current.end)), block);
     if (!(await vscode.workspace.applyEdit(edit))) throw new Error('メタデータを書き込めませんでした。');
     void vscode.window.showInformationMessage('メタデータを追加しました。内容を確認して保存してください。');
+  });
+  register('memo.searchTag', async store => {
+    // 一覧の取得を待たずに開き、取得中はビジー表示にする
+    const groups = store
+      .allFiles()
+      .then(readNotes)
+      .then(notes => groupNotes(notes));
+    const items = groups.then((list): (vscode.QuickPickItem & { group?: (typeof list)[number] })[] => {
+      if (!list.length) return [{ label: 'タグやカテゴリのあるメモはありません' }];
+      return list.flatMap((group, index) => [
+        ...(index && group.kind !== list[index - 1].kind ? [{ label: '', kind: vscode.QuickPickItemKind.Separator }] : []),
+        {
+          label: `${group.kind === 'category' ? '$(folder-library) カテゴリ: ' : '$(tag) '}${group.name}`,
+          description: `${group.notes.length}件`,
+          group
+        }
+      ]);
+    });
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'タグまたはカテゴリを選択' });
+    if (!picked?.group) return;
+    const note = await vscode.window.showQuickPick(
+      picked.group.notes.map(({ entry, metadata }) => ({
+        label: metadata.title ?? path.parse(entry.name).name,
+        description: path.relative(store.root, entry.path),
+        detail: metadata.summary,
+        entry
+      })),
+      { placeHolder: `${picked.label.replace(/^\$\([^)]*\) /, '')} のメモ`, matchOnDescription: true, matchOnDetail: true }
+    );
+    if (note) await open(note.entry.path);
   });
   register('memo.rename', async (store, argument) => {
     const entry = await choose(store, argument ?? fallback(store)[0]);

@@ -108,6 +108,12 @@
         "icon": "$(search-fuzzy)"
       },
       {
+        "command": "memo.searchTag",
+        "title": "タグ・カテゴリで検索",
+        "category": "Memo Explorer",
+        "icon": "$(tag)"
+      },
+      {
         "command": "memo.rename",
         "title": "名前の変更",
         "category": "Memo Explorer"
@@ -183,6 +189,11 @@
           "command": "memo.searchText",
           "when": "view == memoExplorer.files",
           "group": "navigation@6"
+        },
+        {
+          "command": "memo.searchTag",
+          "when": "view == memoExplorer.files",
+          "group": "search"
         },
         {
           "command": "memo.settings",
