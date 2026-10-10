@@ -7,8 +7,13 @@ import * as path from 'node:path';
 export const defaultCommand = '/usr/bin/fm';
 
 export interface ModelRequest {
-  /** 構造化出力の JSON Schema */
-  schema: object;
+  /** 構造化出力の JSON Schema。省略するとテキストで出力する */
+  schema?: object;
+  /**
+   * ユーザーの文章の要約・分類のように、入力を変換する用途向けにガードレールを緩める。
+   * 構造化出力には効かず、既定のガードレールが適用される
+   */
+  permissive?: boolean;
   instructions: string;
   /** プロンプトに添える本文 */
   text: string;
@@ -22,6 +27,8 @@ export class CancelledError extends Error {
   }
 }
 export class TimeoutError extends Error {}
+/** 入力または出力が Apple の安全フィルタ（ガードレール）に止められた */
+export class GuardrailError extends Error {}
 
 function run(command: string, args: string[], timeout: number, signal?: AbortSignal): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -38,6 +45,10 @@ function run(command: string, args: string[], timeout: number, signal?: AbortSig
         if (error.killed)
           reject(new TimeoutError(`Apple Foundation Models が${timeout / 1000}秒以内に応答しませんでした。`, { cause: error }));
         else if (/context size/i.test(line)) reject(new ContextSizeError(line, { cause: error }));
+        else if (/guardrail/i.test(line))
+          reject(
+            new GuardrailError('Apple Foundation Models の安全フィルタ（ガードレール）により生成できませんでした。', { cause: error })
+          );
         else if ((error as NodeJS.ErrnoException).code === 'ENOENT')
           reject(new Error('Apple Foundation Models（/usr/bin/fm）が見つかりません。', { cause: error }));
         else reject(new Error(`Apple Foundation Models でエラーが発生しました。${line}`, { cause: error }));
@@ -75,12 +86,13 @@ export class FoundationModel {
     const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-fm-'));
     try {
       const schema = path.join(directory, 'schema.json');
-      await fs.writeFile(schema, JSON.stringify(request.schema));
+      if (request.schema) await fs.writeFile(schema, JSON.stringify(request.schema));
       // 「--text 値」の形では、- で始まる本文（Markdownの箇条書きなど）がオプションとみなされるため = でつなぐ
       const args = [
         'respond',
         '--no-stream',
-        `--schema=${schema}`,
+        ...(request.schema ? [`--schema=${schema}`] : []),
+        ...(request.permissive ? ['--guardrails=permissive-content-transformations'] : []),
         `--instructions=${request.instructions}`,
         `--text=${request.text}`,
         request.prompt

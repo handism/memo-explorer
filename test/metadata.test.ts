@@ -20,10 +20,11 @@ import {
   addMetadataToFile,
   noteMetadata,
   readNotes,
-  groupNotes
+  groupNotes,
+  extractJson
 } from '../src/metadata';
 import { MemoStore, maxSearchSize } from '../src/core';
-import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, ModelRequest } from '../src/foundationModel';
+import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, GuardrailError, ModelRequest } from '../src/foundationModel';
 
 const metadata: Metadata = {
   title: 'ブックマークの保存方式',
@@ -149,6 +150,11 @@ test('fm is called with arguments that survive hyphenated text', { skip: process
     await echo.respond(request),
     /^respond\|--no-stream\|--schema=[^|]+schema\.json\|--instructions=指示\|--text=- 牛乳\n- 卵\|プロンプト\|\{"type":"object"\}$/
   );
+  // スキーマなし・ガードレールを緩める指定
+  assert.equal(
+    await echo.respond({ permissive: true, instructions: '指示', text: '本文', prompt: 'プロンプト' }),
+    'respond|--no-stream|--guardrails=permissive-content-transformations|--instructions=指示|--text=本文|プロンプト|'
+  );
   assert.equal(await echo.available(), true);
   const overflow = new FoundationModel(
     await fake('overflow', `echo "Error: The session's transcript exceeded the model's context size." >&2; exit 1`)
@@ -156,12 +162,18 @@ test('fm is called with arguments that survive hyphenated text', { skip: process
   await assert.rejects(overflow.respond(request), ContextSizeError);
   assert.equal(await overflow.available(), false);
   await assert.rejects(
-    new FoundationModel(await fake('fail', 'echo "Error: guardrail" >&2; exit 1')).respond(request),
-    /エラーが発生しました。guardrail/
+    new FoundationModel(await fake('guardrail', `echo "Error: The model's safety guardrails were triggered." >&2; exit 1`)).respond(
+      request
+    ),
+    GuardrailError
+  );
+  await assert.rejects(
+    new FoundationModel(await fake('fail', 'echo "Error: unknown" >&2; exit 1')).respond(request),
+    /エラーが発生しました。unknown/
   );
   // 応答がなければ1回だけやり直す
   const count = path.join(directory, 'count');
-  const slow = new FoundationModel(await fake('slow', `echo x >> "${count}"; sleep 5`), 300);
+  const slow = new FoundationModel(await fake('slow', `echo x >> "${count}"; sleep 5`), 1000);
   await assert.rejects(slow.respond(request), TimeoutError);
   assert.equal((await fs.readFile(count, 'utf8')).trim().split('\n').length, 2);
   const abort = new AbortController();
@@ -300,4 +312,34 @@ test('notes are grouped by category and tag', async t => {
       ['tag', '買い物', 'c.md']
     ]
   );
+});
+
+test('guardrail rejections are retried as permissive text generation', async () => {
+  const requests: ModelRequest[] = [];
+  const respond = (request: ModelRequest) => {
+    requests.push(request);
+    if (requests.length === 1) return Promise.reject(new GuardrailError('blocked'));
+    return Promise.resolve('はい。\n```json\n' + JSON.stringify({ ...metadata, category: '読書' }) + '\n```');
+  };
+  assert.deepEqual(await createMetadata(respond, '小説', '本文', defaultCategories), { ...metadata, category: 'その他' });
+  assert.ok(requests[0].schema && !requests[0].permissive);
+  assert.ok(!requests[1].schema && requests[1].permissive);
+  assert.match(
+    requests[1].prompt,
+    /^ファイル名「小説」.*\n.*例: \{.*"category":"技術".*技術・仕事・学習・生活・アイデア・その他 のうち1つだけ/s
+  );
+  // 緩めても止められたら諦める
+  let calls = 0;
+  await assert.rejects(
+    createMetadata(() => (calls++, Promise.reject(new GuardrailError('blocked'))), '小説', '本文', defaultCategories),
+    GuardrailError
+  );
+  assert.equal(calls, 2);
+});
+
+test('JSON is extracted from text output', () => {
+  assert.deepEqual(extractJson('{"a":1}'), { a: 1 });
+  assert.deepEqual(extractJson('```json\n{"a":1}\n```'), { a: 1 });
+  assert.deepEqual(extractJson('結果です: {"a":{"b":2}} 以上'), { a: { b: 2 } });
+  assert.throws(() => extractJson('出力できません'), /解釈できません/);
 });

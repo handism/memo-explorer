@@ -1,7 +1,7 @@
 import { parseDocument, isMap, isScalar, isSeq, Document } from 'yaml';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
-import { ContextSizeError, ModelRequest } from './foundationModel';
+import { ContextSizeError, GuardrailError, ModelRequest } from './foundationModel';
 import { maxSearchSize, Entry } from './core';
 
 /** 自動付与するフロントマターのキー。この順で追加する */
@@ -147,7 +147,37 @@ export function metadataSchema(categories: readonly string[]): object {
 const instructions =
   'あなたはMarkdownメモを整理するアシスタントです。与えられたメモの内容から、検索しやすくするためのメタデータを日本語で作成してください。メモに書かれていない事実は加えないでください。';
 
-/** メモ本文からメタデータを生成する。文脈長を超えたら本文を半分にして1回だけやり直す */
+/** 構造化出力を使わないときに、出力の形を例で示す */
+function example(categories: readonly string[]): string {
+  const sample = {
+    title: 'React useEffect の注意点',
+    tags: ['React', 'フック', '副作用'],
+    summary: 'useEffectの依存配列の書き方と、StrictModeで2回実行される理由をまとめた。',
+    category: categories[0],
+    keywords: ['useEffect', '依存配列', 'StrictMode', '再レンダリング', 'React 18']
+  };
+  return (
+    `メタデータを次の例と同じ形のJSONだけで出力してください。\n例: ${JSON.stringify(sample)}\n` +
+    `title は内容を表す短いタイトル、tags は3〜6個の短い名詞、summary は本文を言い換えた1〜2文の要約、keywords は5〜8個。category は ${categories.join('・')} のうち1つだけ。`
+  );
+}
+/** テキストで出力させたときの JSON を取り出す。```json のコードブロックや前後の文を除く */
+export function extractJson(output: string): unknown {
+  const text = /```(?:json)?\s*([\s\S]*?)```/.exec(output)?.[1] ?? output;
+  const start = text.indexOf('{'),
+    end = text.lastIndexOf('}');
+  try {
+    return JSON.parse(start >= 0 && end > start ? text.slice(start, end + 1) : text);
+  } catch (error) {
+    throw new Error('モデルの出力を解釈できません。', { cause: error });
+  }
+}
+
+/**
+ * メモ本文からメタデータを生成する。文脈長を超えたら本文を半分にして1回だけやり直す。
+ * ガードレールに止められたら、緩めたガードレールで1回だけやり直す。緩めたガードレールは構造化出力に効かないため、
+ * 出力の形を例で示してテキストで出力させる
+ */
 export async function createMetadata(
   respond: (request: ModelRequest) => Promise<string>,
   name: string,
@@ -156,25 +186,24 @@ export async function createMetadata(
   limit = inputLimit
 ): Promise<Metadata> {
   if (!body.trim()) throw new Error('本文が空のため、メタデータを生成できません。');
-  for (let attempt = 0; ; attempt++) {
+  let shortened = false,
+    structured = true;
+  for (;;) {
     const { text, truncated } = truncate(body, limit);
+    const prompt = `ファイル名「${name}」のメモのメタデータを生成してください。${truncated ? '本文は長いため先頭の一部だけを渡しています。' : ''}`;
     try {
-      const output = await respond({
-        schema: metadataSchema(categories),
-        instructions,
-        text,
-        prompt: `ファイル名「${name}」のメモのメタデータを生成してください。${truncated ? '本文は長いため先頭の一部だけを渡しています。' : ''}`
-      });
-      let raw: unknown;
-      try {
-        raw = JSON.parse(output);
-      } catch (error) {
-        throw new Error('モデルの出力を解釈できません。', { cause: error });
-      }
-      return normalizeMetadata(raw, categories);
+      const output = await respond(
+        structured
+          ? { schema: metadataSchema(categories), instructions, text, prompt }
+          : { permissive: true, instructions, text, prompt: `${prompt}\n${example(categories)}` }
+      );
+      return normalizeMetadata(extractJson(output), categories);
     } catch (error) {
-      if (!(error instanceof ContextSizeError) || attempt > 0) throw error;
-      limit = Math.floor(limit / 2);
+      if (error instanceof ContextSizeError && !shortened) {
+        shortened = true;
+        limit = Math.floor(limit / 2);
+      } else if (error instanceof GuardrailError && structured) structured = false;
+      else throw error;
     }
   }
 }
