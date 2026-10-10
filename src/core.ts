@@ -313,11 +313,11 @@ export class MemoStore {
     }
     return plan;
   }
-  async allFiles(): Promise<Entry[]> {
-    // シンボリックリンクは list() で除外されるため、配下の確認はルートの1回で足りる
-    await this.assertInside(this.root);
+  async allFiles(directory = this.root): Promise<Entry[]> {
+    // シンボリックリンクは list() で除外されるため、配下の確認は起点の1回で足りる
+    await this.assertInside(directory);
     const result: Entry[] = [],
-      pending = [this.root];
+      pending = [directory];
     // ツリーと同じ順（フォルダごとに名前順）に並べる。後から取り出すため、サブフォルダは逆順に積む
     while (pending.length) {
       const entries = await this.list(pending.pop()!);

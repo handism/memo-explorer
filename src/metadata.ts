@@ -1,5 +1,8 @@
 import { parseDocument, isMap, isScalar, isSeq, Document } from 'yaml';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 import { ContextSizeError, ModelRequest } from './foundationModel';
+import { maxSearchSize } from './core';
 
 /** 自動付与するフロントマターのキー。この順で追加する */
 export const metadataKeys = ['title', 'tags', 'summary', 'category', 'keywords'] as const;
@@ -173,5 +176,63 @@ export async function createMetadata(
       if (!(error instanceof ContextSizeError) || attempt > 0) throw error;
       limit = Math.floor(limit / 2);
     }
+  }
+}
+
+/** 一括付与で付与しなかった理由。done は summary が既にあるメモ */
+export type Skip = 'done' | 'empty' | 'large' | 'busy' | 'changed';
+/** 一括付与の対象か。対象外ならその理由を返す。フロントマターを解釈できなければ例外 */
+export function skipReason(text: string): 'done' | 'empty' | undefined {
+  const { yaml, body } = splitFrontmatter(text.replace(/^\uFEFF/, ''));
+  if (existingKeys(yaml).includes('summary')) return 'done';
+  if (!body.trim()) return 'empty';
+}
+/** 一括付与の対象にする拡張子。.txt はフロントマターを書く形式ではないため除く */
+export function markdown(file: string, defaultExtension: string): boolean {
+  const extension = path.extname(file).toLowerCase();
+  return extension === '.md' || extension === '.markdown' || (extension !== '.txt' && extension === defaultExtension.toLowerCase());
+}
+async function read(file: string): Promise<string | undefined> {
+  const handle = await fs.open(file, 'r');
+  try {
+    return (await handle.stat()).size > maxSearchSize ? undefined : await handle.readFile('utf8');
+  } finally {
+    await handle.close();
+  }
+}
+/** ファイルが一括付与の対象か。対象外ならその理由を返す */
+export async function fileSkipReason(file: string): Promise<'done' | 'empty' | 'large' | undefined> {
+  const text = await read(file);
+  return text === undefined ? 'large' : skipReason(text);
+}
+/**
+ * ファイルにメタデータを付与して保存する。既存の値は上書きしない。
+ * busy はエディタで未保存の変更があるか。生成の前後で確かめ、生成中にファイルが変わっていれば書き込まない。
+ * 書き込みは同じフォルダの隠しファイルに書いてから置き換え、途中で止まってもメモを壊さない
+ */
+export async function addMetadataToFile(
+  file: string,
+  generate: (body: string) => Promise<Metadata>,
+  busy: () => boolean
+): Promise<Skip | undefined> {
+  if (busy()) return 'busy';
+  const before = await read(file);
+  if (before === undefined) return 'large';
+  const skip = skipReason(before);
+  if (skip) return skip;
+  const bom = before.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const { yaml, body, end } = splitFrontmatter(before.slice(bom.length));
+  const metadata = await generate(body);
+  if (busy()) return 'busy';
+  if ((await read(file)) !== before) return 'changed';
+  const eol = before.includes('\r\n') ? '\r\n' : '\n';
+  const content = bom + frontmatterBlock(mergeFrontmatter(yaml, metadata, false), eol) + before.slice(bom.length + end);
+  const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
+  try {
+    await fs.writeFile(temporary, content, { mode: (await fs.stat(file)).mode });
+    await fs.rename(temporary, file);
+  } catch (error) {
+    await fs.rm(temporary, { force: true });
+    throw error;
   }
 }

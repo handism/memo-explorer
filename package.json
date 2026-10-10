@@ -218,7 +218,7 @@
         },
         {
           "command": "memo.generateMetadata",
-          "when": "view == memoExplorer.files && viewItem =~ /^memoFile/ && memoExplorer.metadataAvailable",
+          "when": "view == memoExplorer.files && viewItem =~ /^memo(File|Folder)/ && memoExplorer.metadataAvailable",
           "group": "metadata"
         },
         {

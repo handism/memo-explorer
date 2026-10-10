@@ -13,8 +13,13 @@ import {
   truncate,
   createMetadata,
   defaultCategories,
-  Metadata
+  Metadata,
+  skipReason,
+  markdown,
+  fileSkipReason,
+  addMetadataToFile
 } from '../src/metadata';
+import { MemoStore, maxSearchSize } from '../src/core';
 import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, ModelRequest } from '../src/foundationModel';
 
 const metadata: Metadata = {
@@ -161,4 +166,91 @@ test('fm is called with arguments that survive hyphenated text', { skip: process
   abort.abort();
   await assert.rejects(pending, CancelledError);
   await assert.rejects(new FoundationModel(path.join(directory, 'missing')).respond(request), /見つかりません/);
+});
+
+test('bulk targets skip processed, empty and non-markdown notes', () => {
+  assert.equal(skipReason('---\nsummary: 済み\n---\n本文'), 'done');
+  assert.equal(skipReason('---\ntitle: 手書き\n---\n本文'), undefined);
+  assert.equal(skipReason('\uFEFF---\nsummary: 済み\n---\n本文'), 'done');
+  assert.equal(skipReason('---\ntags: [a]\n---\n \n'), 'empty');
+  assert.throws(() => skipReason('---\ntitle: [a\n---\n本文'), /解釈できません/);
+  assert.equal(markdown('a.md', '.md'), true);
+  assert.equal(markdown('a.MARKDOWN', '.md'), true);
+  assert.equal(markdown('a.txt', '.txt'), false);
+  assert.equal(markdown('a.mdx', '.mdx'), true);
+});
+
+test('metadata is written to files without clobbering edits', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-metadata-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const file = path.join(root, 'memo.md');
+  const generate = (body: string) => {
+    assert.equal(body, '- 本文\r\n');
+    return Promise.resolve(metadata);
+  };
+  // BOM・改行コード・本文はそのまま残す
+  await fs.writeFile(file, '\uFEFF---\r\naliases: [a]\r\n---\r\n- 本文\r\n');
+  assert.equal(await addMetadataToFile(file, generate, () => false), undefined);
+  const written = await fs.readFile(file, 'utf8');
+  assert.match(written, /^\uFEFF---\r\naliases: \[a\]\r\ntags:\r\n {2}- VS-Code\r\n/);
+  assert.ok(
+    written.endsWith(
+      'summary: 保存方式をJSONファイルに切り替えた。\r\ncategory: 技術\r\nkeywords:\r\n  - globalState\r\n  - キュー\r\n---\r\n- 本文\r\n'
+    )
+  );
+  assert.deepEqual(await fs.readdir(root), ['memo.md']);
+  // 付与済みは生成しない
+  assert.equal(await fileSkipReason(file), 'done');
+  assert.equal(
+    await addMetadataToFile(
+      file,
+      () => assert.fail('generated'),
+      () => false
+    ),
+    'done'
+  );
+
+  const original = '本文\n';
+  await fs.writeFile(file, original);
+  assert.equal(
+    await addMetadataToFile(
+      file,
+      () => assert.fail('generated'),
+      () => true
+    ),
+    'busy'
+  );
+  // 生成中にエディタで編集された、またはファイルが変更された場合は書き込まない
+  let dirty = false;
+  const editing = () => ((dirty = true), Promise.resolve(metadata));
+  assert.equal(await addMetadataToFile(file, editing, () => dirty), 'busy');
+  const changing = async () => (await fs.appendFile(file, '追記\n'), metadata);
+  assert.equal(await addMetadataToFile(file, changing, () => false), 'changed');
+  assert.equal(await fs.readFile(file, 'utf8'), original + '追記\n');
+
+  await fs.writeFile(file, Buffer.alloc(maxSearchSize + 1, 'a'));
+  assert.equal(await fileSkipReason(file), 'large');
+  assert.equal(
+    await addMetadataToFile(
+      file,
+      () => assert.fail('generated'),
+      () => false
+    ),
+    'large'
+  );
+  await fs.writeFile(file, '');
+  assert.equal(await fileSkipReason(file), 'empty');
+});
+
+test('all files can be listed from a subfolder', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-subfolder-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'a', 'b'), { recursive: true });
+  for (const file of ['top.md', 'a/one.md', 'a/b/two.md']) await fs.writeFile(path.join(root, file), '');
+  const store = new MemoStore(root);
+  assert.deepEqual(
+    (await store.allFiles(path.join(root, 'a'))).map(e => path.relative(root, e.path)),
+    ['a/one.md', 'a/b/two.md'].map(p => path.normalize(p))
+  );
+  await assert.rejects(store.allFiles(os.tmpdir()), /保存先フォルダの外/);
 });
