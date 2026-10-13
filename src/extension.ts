@@ -31,11 +31,12 @@ import {
   frontmatterBlock,
   defaultCategories,
   addMetadataToFile,
-  fileSkipReason,
+  fileBulkTask,
   readNotes,
   groupNotes,
   markdown,
-  Skip
+  Skip,
+  Task
 } from './metadata';
 
 export { MemoTree, MemoDragAndDrop } from './memoTree';
@@ -297,16 +298,17 @@ export async function activate(context: vscode.ExtensionContext) {
   // メニューの表示に使う。判定には数秒かかることがあるため、起動を待たせない
   void model.available().then(ok => vscode.commands.executeCommand('setContext', 'memoExplorer.metadataAvailable', ok));
   const skipLabels: Record<Skip, string> = {
-    done: '付与済み（summary あり）',
+    done: '付与済み（summary・type あり）',
     empty: '本文が空',
     large: '2MB超',
     busy: 'エディタに未保存の変更あり',
     changed: '生成中に変更あり'
   };
-  /** フォルダ配下のメモにまとめて付与する。既存の値は上書きせず、summary があるメモは付与済みとして飛ばす */
+  /** フォルダ配下のメモにまとめて付与する。既存の値は上書きせず、summary があるメモは付与済みとして飛ばす（type がなければ type だけ足す） */
   async function generateFolder(store: MemoStore, folder: Entry, categories: string[]): Promise<void> {
     const files = (await store.allFiles(folder.path)).filter(e => markdown(e.name, store.defaultExtension));
     const targets: Entry[] = [],
+      count: Record<Task, number> = { generate: 0, type: 0 },
       skipped = new Map<Skip, number>(),
       failed: string[] = [];
     const relative = (entry: Entry) => path.relative(store.root, entry.path);
@@ -323,9 +325,11 @@ export async function activate(context: vscode.ExtensionContext) {
     await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'メモを確認中…' }, async () => {
       for (const entry of files) {
         try {
-          const reason = await fileSkipReason(entry.path);
-          if (reason) skip(entry, reason);
-          else targets.push(entry);
+          const task = await fileBulkTask(entry.path);
+          if (task === 'generate' || task === 'type') {
+            count[task]++;
+            targets.push(entry);
+          } else skip(entry, task);
         } catch (error) {
           fail(entry, error);
         }
@@ -340,17 +344,21 @@ export async function activate(context: vscode.ExtensionContext) {
       void vscode.window.showInformationMessage(`「${folder.name}」に付与するメモはありません。`, { detail: summary() });
       return;
     }
-    const minutes = Math.max(1, Math.round((targets.length * 5) / 60));
+    const minutes = Math.max(1, Math.round((count.generate * 5) / 60));
+    const typing = `付与済みの${count.type}件には、OKF の type だけを追加します（生成はしません）。`;
     const answer = await vscode.window.showWarningMessage(
-      `「${folder.name}」の${targets.length}件のメモにメタデータを付与しますか？`,
+      count.generate
+        ? `「${folder.name}」の${count.generate}件のメモにメタデータを付与しますか？`
+        : `「${folder.name}」の${count.type}件の付与済みのメモに type を追加しますか？`,
       {
         modal: true,
-        detail: `1件に数秒かかります（目安 約${minutes}分）。既存の値は上書きせず、保存まで行います。途中でキャンセルできます。${summary() && '\n\n' + summary()}`
+        detail: `${count.generate ? `1件に数秒かかります（目安 約${minutes}分）。${count.type ? typing : ''}` : ''}既存の値は上書きせず、保存まで行います。途中でキャンセルできます。${summary() && '\n\n' + summary()}`
       },
       '付与する'
     );
     if (answer !== '付与する') return;
     let added = 0,
+      typed = 0,
       cancelled = false;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'メタデータを付与中', cancellable: true },
@@ -364,16 +372,18 @@ export async function activate(context: vscode.ExtensionContext) {
           const busy = () => vscode.workspace.textDocuments.some(d => d.isDirty && d.uri.scheme === 'file' && d.uri.fsPath === entry.path);
           try {
             await store.assertInside(entry.path);
-            const reason = await addMetadataToFile(
+            const result = await addMetadataToFile(
               entry.path,
               body => createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body, categories),
               busy
             );
-            if (reason) skip(entry, reason);
-            else {
+            if (result === 'generate') {
               added++;
               log(entry, '付与');
-            }
+            } else if (result === 'type') {
+              typed++;
+              log(entry, 'type を追加');
+            } else skip(entry, result);
           } catch (error) {
             if (error instanceof CancelledError) break;
             fail(entry, error);
@@ -383,7 +393,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     );
     const skippedCount = [...skipped.values()].reduce((a, b) => a + b, 0);
-    const text = `${cancelled ? 'キャンセルしました。' : ''}メタデータを${added}件に付与しました。${skippedCount ? `スキップ ${skippedCount}件。` : ''}${failed.length ? `失敗 ${failed.length}件。` : ''}`;
+    const text = `${cancelled ? 'キャンセルしました。' : ''}メタデータを${added}件に付与しました。${typed ? `type を${typed}件に追加しました。` : ''}${skippedCount ? `スキップ ${skippedCount}件。` : ''}${failed.length ? `失敗 ${failed.length}件。` : ''}`;
     const show = failed.length
       ? vscode.window.showWarningMessage(text, '詳細を表示')
       : vscode.window.showInformationMessage(text, '詳細を表示');

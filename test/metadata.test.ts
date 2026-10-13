@@ -14,9 +14,9 @@ import {
   createMetadata,
   defaultCategories,
   Metadata,
-  skipReason,
+  bulkTask,
   markdown,
-  fileSkipReason,
+  fileBulkTask,
   addMetadataToFile,
   noteMetadata,
   readNotes,
@@ -84,19 +84,29 @@ test('model output is validated and normalized', () => {
 });
 
 test('metadata is merged without losing existing frontmatter', () => {
+  const now = new Date('2026-10-13T01:02:03.456Z');
   assert.equal(
-    mergeFrontmatter(undefined, metadata, false),
-    'tags:\n  - VS-Code\n  - ブックマーク\ntitle: ブックマークの保存方式\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\n'
+    mergeFrontmatter(undefined, metadata, false, now),
+    'type: note\ntags:\n  - VS-Code\n  - ブックマーク\ntitle: ブックマークの保存方式\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
   );
   // 既存のキー・コメント・順序は残し、タグは足す
-  const merged = mergeFrontmatter('# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n', metadata, false);
+  const merged = mergeFrontmatter('# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n', metadata, false, now);
   assert.equal(
     merged,
-    '# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n  - ブックマーク\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\n'
+    '# メモ\ntype: note\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n  - ブックマーク\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
   );
+  // OKF の type は既存の値を残し、generated は書き換える
+  assert.equal(
+    mergeFrontmatter('type: concept\ngenerated: {by: other, at: 2020-01-01T00:00:00Z}\n', metadata, true, now).split('tags:')[0],
+    'type: concept\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
+  );
+  assert.match(mergeFrontmatter('type:\n', metadata, false, now), /^type: note\n/);
   assert.match(mergeFrontmatter('title: 手書き', metadata, true), /^title: ブックマークの保存方式$/m);
   // 文字列のタグはリストにする
-  assert.match(mergeFrontmatter('tags: 設計, vs-code', metadata, false), /^tags:\n {2}- 設計\n {2}- vs-code\n {2}- ブックマーク\n/);
+  assert.match(
+    mergeFrontmatter('tags: 設計, vs-code', metadata, false),
+    /^type: note\ntags:\n {2}- 設計\n {2}- vs-code\n {2}- ブックマーク\n/
+  );
   assert.equal(frontmatterBlock('a: 1\n', '\r\n'), '---\r\na: 1\r\n---\r\n');
   assert.equal(frontmatterBlock(''), '---\n---\n');
 });
@@ -184,11 +194,14 @@ test('fm is called with arguments that survive hyphenated text', { skip: process
 });
 
 test('bulk targets skip processed, empty and non-markdown notes', () => {
-  assert.equal(skipReason('---\nsummary: 済み\n---\n本文'), 'done');
-  assert.equal(skipReason('---\ntitle: 手書き\n---\n本文'), undefined);
-  assert.equal(skipReason('\uFEFF---\nsummary: 済み\n---\n本文'), 'done');
-  assert.equal(skipReason('---\ntags: [a]\n---\n \n'), 'empty');
-  assert.throws(() => skipReason('---\ntitle: [a\n---\n本文'), /解釈できません/);
+  assert.equal(bulkTask('---\ntype: note\nsummary: 済み\n---\n本文'), 'done');
+  // 旧版で付与済みのメモは type だけ足す
+  assert.equal(bulkTask('---\nsummary: 済み\n---\n本文'), 'type');
+  assert.equal(bulkTask('---\ntype:\nsummary: 済み\n---\n'), 'type');
+  assert.equal(bulkTask('---\ntitle: 手書き\n---\n本文'), 'generate');
+  assert.equal(bulkTask('\uFEFF---\ntype: note\nsummary: 済み\n---\n本文'), 'done');
+  assert.equal(bulkTask('---\ntags: [a]\n---\n \n'), 'empty');
+  assert.throws(() => bulkTask('---\ntitle: [a\n---\n本文'), /解釈できません/);
   assert.equal(markdown('a.md', '.md'), true);
   assert.equal(markdown('a.MARKDOWN', '.md'), true);
   assert.equal(markdown('a.txt', '.txt'), false);
@@ -205,17 +218,16 @@ test('metadata is written to files without clobbering edits', async t => {
   };
   // BOM・改行コード・本文はそのまま残す
   await fs.writeFile(file, '\uFEFF---\r\naliases: [a]\r\n---\r\n- 本文\r\n');
-  assert.equal(await addMetadataToFile(file, generate, () => false), undefined);
+  assert.equal(await addMetadataToFile(file, generate, () => false), 'generate');
   const written = await fs.readFile(file, 'utf8');
-  assert.match(written, /^\uFEFF---\r\naliases: \[a\]\r\ntags:\r\n {2}- VS-Code\r\n/);
-  assert.ok(
-    written.endsWith(
-      'summary: 保存方式をJSONファイルに切り替えた。\r\ncategory: 技術\r\nkeywords:\r\n  - globalState\r\n  - キュー\r\n---\r\n- 本文\r\n'
-    )
+  assert.match(written, /^\uFEFF---\r\ntype: note\r\naliases: \[a\]\r\ntags:\r\n {2}- VS-Code\r\n/);
+  assert.match(
+    written,
+    /summary: 保存方式をJSONファイルに切り替えた。\r\ncategory: 技術\r\nkeywords:\r\n {2}- globalState\r\n {2}- キュー\r\ngenerated:\r\n {2}by: memo-explorer\/apple-foundation-models\r\n {2}at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\r\n---\r\n- 本文\r\n$/
   );
   assert.deepEqual(await fs.readdir(root), ['memo.md']);
   // 付与済みは生成しない
-  assert.equal(await fileSkipReason(file), 'done');
+  assert.equal(await fileBulkTask(file), 'done');
   assert.equal(
     await addMetadataToFile(
       file,
@@ -224,6 +236,19 @@ test('metadata is written to files without clobbering edits', async t => {
     ),
     'done'
   );
+
+  // 旧版で付与済みのメモは生成せず type だけ足す
+  await fs.writeFile(file, '---\r\n# 旧版\r\ntitle: 手書き\r\nsummary: 済み\r\n---\r\n本文\r\n');
+  assert.equal(await fileBulkTask(file), 'type');
+  assert.equal(
+    await addMetadataToFile(
+      file,
+      () => assert.fail('generated'),
+      () => false
+    ),
+    'type'
+  );
+  assert.equal(await fs.readFile(file, 'utf8'), '---\r\n# 旧版\r\ntype: note\r\ntitle: 手書き\r\nsummary: 済み\r\n---\r\n本文\r\n');
 
   const original = '本文\n';
   await fs.writeFile(file, original);
@@ -244,7 +269,7 @@ test('metadata is written to files without clobbering edits', async t => {
   assert.equal(await fs.readFile(file, 'utf8'), original + '追記\n');
 
   await fs.writeFile(file, Buffer.alloc(maxSearchSize + 1, 'a'));
-  assert.equal(await fileSkipReason(file), 'large');
+  assert.equal(await fileBulkTask(file), 'large');
   assert.equal(
     await addMetadataToFile(
       file,
@@ -254,7 +279,7 @@ test('metadata is written to files without clobbering edits', async t => {
     'large'
   );
   await fs.writeFile(file, '');
-  assert.equal(await fileSkipReason(file), 'empty');
+  assert.equal(await fileBulkTask(file), 'empty');
 });
 
 test('all files can be listed from a subfolder', async t => {

@@ -1,4 +1,4 @@
-import { parseDocument, isMap, isScalar, isSeq, Document } from 'yaml';
+import { parseDocument, isMap, isScalar, isSeq, Document, YAMLMap, isNode } from 'yaml';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { ContextSizeError, GuardrailError, ModelRequest } from './foundationModel';
@@ -13,6 +13,10 @@ export interface Metadata {
   category: string;
   keywords: string[];
 }
+/** OKF（Open Knowledge Format）で必須の type。ないときだけ付ける */
+export const noteType = 'note';
+/** OKF の generated.by。生成したエージェントとモデル */
+export const generator = 'memo-explorer/apple-foundation-models';
 export const defaultCategories = ['技術', '仕事', '学習', '生活', 'アイデア', 'その他'];
 /** モデルに渡す本文の上限（文字数）。日本語のMarkdownはおよそ2文字で1トークンになり、文脈長は約4,000トークン */
 export const inputLimit = 4000;
@@ -93,13 +97,31 @@ export function normalizeMetadata(raw: unknown, categories: readonly string[]): 
   return metadata;
 }
 
+/** OKF で必須の type がなければ足す。先頭（先頭のコメントの後）に置く */
+function addType(doc: Document): void {
+  if (!empty(doc.get('type', true))) return;
+  if (doc.has('type')) doc.set('type', noteType);
+  else {
+    // 先頭のコメントは type より前に残す
+    const map = doc.contents as YAMLMap,
+      pair = doc.createPair('type', noteType),
+      first = map.items[0]?.key;
+    if (isNode(first) && first.commentBefore) {
+      pair.key.commentBefore = first.commentBefore;
+      first.commentBefore = undefined;
+    }
+    map.items.unshift(pair);
+  }
+}
 /**
  * 既存のフロントマターに生成結果を足したYAMLを返す。既存のキーやコメント、順序は残す。
- * tags は既存のタグに足し、それ以外は値がないとき（overwrite なら常に）だけ書き込む
+ * tags は既存のタグに足し、それ以外は値がないとき（overwrite なら常に）だけ書き込む。
+ * OKF に合わせ、type がなければ先頭に足し、generated（生成したモデルと日時）は常に書き換える
  */
-export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, overwrite: boolean): string {
+export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, overwrite: boolean, now = new Date()): string {
   const doc = parse(yaml);
   if (doc.contents === null) doc.contents = doc.createNode({});
+  addType(doc);
   const current = doc.get('tags', true);
   const tags = isSeq(current)
     ? current.items.map(item => String(isScalar(item) ? item.value : item))
@@ -115,6 +137,7 @@ export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, o
     if (key === 'tags' || (!overwrite && !empty(doc.get(key, true)))) continue;
     doc.set(key, metadata[key]);
   }
+  doc.set('generated', { by: generator, at: now.toISOString().replace(/\.\d+Z$/, 'Z') });
   return doc.toString({ lineWidth: 0, flowCollectionPadding: false });
 }
 /** フロントマター全体（--- を含む）。本文の前に置く */
@@ -208,13 +231,15 @@ export async function createMetadata(
   }
 }
 
-/** 一括付与で付与しなかった理由。done は summary が既にあるメモ */
+/** 一括付与で付与しなかった理由。done は summary と type が既にあるメモ */
 export type Skip = 'done' | 'empty' | 'large' | 'busy' | 'changed';
-/** 一括付与の対象か。対象外ならその理由を返す。フロントマターを解釈できなければ例外 */
-export function skipReason(text: string): 'done' | 'empty' | undefined {
+/** 一括付与で行うこと。type は付与済み（summary あり）で OKF の type だけがないメモで、モデルを呼ばずに type だけ足す */
+export type Task = 'generate' | 'type';
+/** 一括付与で行うこと。対象外ならその理由を返す。フロントマターを解釈できなければ例外 */
+export function bulkTask(text: string): Task | 'done' | 'empty' {
   const { yaml, body } = splitFrontmatter(text.replace(/^\uFEFF/, ''));
-  if (existingKeys(yaml).includes('summary')) return 'done';
-  if (!body.trim()) return 'empty';
+  if (existingKeys(yaml).includes('summary')) return empty(parse(yaml).get('type', true)) ? 'type' : 'done';
+  return body.trim() ? 'generate' : 'empty';
 }
 /** 一括付与の対象にする拡張子。.txt はフロントマターを書く形式ではないため除く */
 export function markdown(file: string, defaultExtension: string): boolean {
@@ -229,13 +254,13 @@ async function read(file: string): Promise<string | undefined> {
     await handle.close();
   }
 }
-/** ファイルが一括付与の対象か。対象外ならその理由を返す */
-export async function fileSkipReason(file: string): Promise<'done' | 'empty' | 'large' | undefined> {
+/** ファイルに一括付与で行うこと。対象外ならその理由を返す */
+export async function fileBulkTask(file: string): Promise<Task | 'done' | 'empty' | 'large'> {
   const text = await read(file);
-  return text === undefined ? 'large' : skipReason(text);
+  return text === undefined ? 'large' : bulkTask(text);
 }
 /**
- * ファイルにメタデータを付与して保存する。既存の値は上書きしない。
+ * ファイルにメタデータを付与して保存し、行ったことを返す。既存の値は上書きしない。付与済みで type だけがないメモは type だけ足す。
  * busy はエディタで未保存の変更があるか。生成の前後で確かめ、生成中にファイルが変わっていれば書き込まない。
  * 書き込みは同じフォルダの隠しファイルに書いてから置き換え、途中で止まってもメモを壊さない
  */
@@ -243,19 +268,27 @@ export async function addMetadataToFile(
   file: string,
   generate: (body: string) => Promise<Metadata>,
   busy: () => boolean
-): Promise<Skip | undefined> {
+): Promise<Task | Skip> {
   if (busy()) return 'busy';
   const before = await read(file);
   if (before === undefined) return 'large';
-  const skip = skipReason(before);
-  if (skip) return skip;
+  const task = bulkTask(before);
+  if (task === 'done' || task === 'empty') return task;
   const bom = before.startsWith('\uFEFF') ? '\uFEFF' : '';
   const { yaml, body, end } = splitFrontmatter(before.slice(bom.length));
-  const metadata = await generate(body);
-  if (busy()) return 'busy';
-  if ((await read(file)) !== before) return 'changed';
+  let merged: string;
+  if (task === 'type') {
+    const doc = parse(yaml);
+    addType(doc);
+    merged = doc.toString({ lineWidth: 0, flowCollectionPadding: false });
+  } else {
+    const metadata = await generate(body);
+    if (busy()) return 'busy';
+    if ((await read(file)) !== before) return 'changed';
+    merged = mergeFrontmatter(yaml, metadata, false);
+  }
   const eol = before.includes('\r\n') ? '\r\n' : '\n';
-  const content = bom + frontmatterBlock(mergeFrontmatter(yaml, metadata, false), eol) + before.slice(bom.length + end);
+  const content = bom + frontmatterBlock(merged, eol) + before.slice(bom.length + end);
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
   try {
     await fs.writeFile(temporary, content, { mode: (await fs.stat(file)).mode });
@@ -264,6 +297,7 @@ export async function addMetadataToFile(
     await fs.rm(temporary, { force: true });
     throw error;
   }
+  return task;
 }
 
 /** 検索に使うフロントマターの値 */
