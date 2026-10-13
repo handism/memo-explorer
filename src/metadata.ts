@@ -1,27 +1,18 @@
-import { parseDocument, isMap, isScalar, isSeq, Document, YAMLMap, isNode } from 'yaml';
+import { parseDocument, isMap, isScalar, isSeq, Document } from 'yaml';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import { ContextSizeError, GuardrailError, ModelRequest } from './foundationModel';
 import { maxSearchSize, Entry } from './core';
 
 /** 自動付与するフロントマターのキー。この順で追加する */
-export const metadataKeys = ['title', 'tags', 'summary', 'category', 'keywords'] as const;
+export const metadataKeys = ['tags', 'summary'] as const;
 export interface Metadata {
-  title: string;
   tags: string[];
   summary: string;
-  category: string;
-  keywords: string[];
 }
-/** OKF（Open Knowledge Format）で必須の type。ないときだけ付ける */
-export const noteType = 'note';
-/** OKF の generated.by。生成したエージェントとモデル */
-export const generator = 'memo-explorer/apple-foundation-models';
-export const defaultCategories = ['技術', '仕事', '学習', '生活', 'アイデア', 'その他'];
 /** モデルに渡す本文の上限（文字数）。日本語のMarkdownはおよそ2文字で1トークンになり、文脈長は約4,000トークン */
 export const inputLimit = 4000;
-const maxTags = 6,
-  maxKeywords = 8;
+const maxTags = 6;
 
 export interface Frontmatter {
   /** --- の間のYAML。フロントマターがなければ undefined */
@@ -81,64 +72,49 @@ function text(value: unknown): string {
 function list(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((v): v is string => typeof v === 'string') : [];
 }
-/** モデルの出力を検査して整える。カテゴリが候補になければ「その他」（なければ最後の候補）にする */
-export function normalizeMetadata(raw: unknown, categories: readonly string[]): Metadata {
+/** モデルの出力を検査して整える */
+export function normalizeMetadata(raw: unknown): Metadata {
   if (typeof raw !== 'object' || raw === null) throw new Error('モデルの出力を解釈できません。');
   const value = raw as Record<string, unknown>;
-  const category = text(value.category);
   const metadata: Metadata = {
-    title: text(value.title),
     tags: unique(list(value.tags).map(tagName), maxTags),
-    summary: text(value.summary),
-    category: categories.includes(category) ? category : categories.includes('その他') ? 'その他' : categories[categories.length - 1],
-    keywords: unique(list(value.keywords).map(text), maxKeywords)
+    summary: text(value.summary)
   };
-  if (!metadata.title || !metadata.summary) throw new Error('モデルの出力にタイトルまたは要約がありません。');
+  if (!metadata.summary) throw new Error('モデルの出力に要約がありません。');
   return metadata;
 }
 
-/** OKF で必須の type がなければ足す。先頭（先頭のコメントの後）に置く */
-function addType(doc: Document): void {
-  if (!empty(doc.get('type', true))) return;
-  if (doc.has('type')) doc.set('type', noteType);
-  else {
-    // 先頭のコメントは type より前に残す
-    const map = doc.contents as YAMLMap,
-      pair = doc.createPair('type', noteType),
-      first = map.items[0]?.key;
-    if (isNode(first) && first.commentBefore) {
-      pair.key.commentBefore = first.commentBefore;
-      first.commentBefore = undefined;
-    }
-    map.items.unshift(pair);
-  }
+/** フロントマターの tags をタグの配列として読む。文字列ならカンマ・空白で区切る */
+function readTags(value: unknown): string[] {
+  return isSeq(value)
+    ? value.items.map(item => String(isScalar(item) ? item.value : item))
+    : isScalar(value) && !empty(value)
+      ? String(value.value).split(/[,\s]+/)
+      : [];
+}
+function stringify(doc: Document): string {
+  return doc.toString({ lineWidth: 0, flowCollectionPadding: false });
 }
 /**
  * 既存のフロントマターに生成結果を足したYAMLを返す。既存のキーやコメント、順序は残す。
- * tags は既存のタグに足し、それ以外は値がないとき（overwrite なら常に）だけ書き込む。
- * OKF に合わせ、type がなければ先頭に足し、generated（生成したモデルと日時）は常に書き換える
+ * tags は既存のタグに足して [a, b] の形で書き、summary は値がないとき（overwrite なら常に）だけ書き込む
  */
-export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, overwrite: boolean, now = new Date()): string {
+export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, overwrite: boolean): string {
   const doc = parse(yaml);
   if (doc.contents === null) doc.contents = doc.createNode({});
-  addType(doc);
   const current = doc.get('tags', true);
-  const tags = isSeq(current)
-    ? current.items.map(item => String(isScalar(item) ? item.value : item))
-    : isScalar(current) && !empty(current)
-      ? String(current.value).split(/[,\s]+/)
-      : [];
-  const merged = unique([...tags.map(t => t.replace(/^#+/, '')), ...metadata.tags], Infinity);
+  const tags = readTags(current).map(t => t.replace(/^#+/, ''));
+  const known = new Set(tags.map(t => t.toLowerCase()));
   if (isSeq(current)) {
-    const known = new Set(tags.map(t => t.replace(/^#+/, '').toLowerCase()));
     for (const tag of metadata.tags) if (!known.has(tag.toLowerCase())) current.add(doc.createNode(tag));
-  } else if (empty(current) || isScalar(current)) doc.set('tags', merged);
-  for (const key of metadataKeys) {
-    if (key === 'tags' || (!overwrite && !empty(doc.get(key, true)))) continue;
-    doc.set(key, metadata[key]);
+    current.flow = true;
+  } else {
+    const node = doc.createNode(unique([...tags, ...metadata.tags], Infinity));
+    node.flow = true;
+    doc.set('tags', node);
   }
-  doc.set('generated', { by: generator, at: now.toISOString().replace(/\.\d+Z$/, 'Z') });
-  return doc.toString({ lineWidth: 0, flowCollectionPadding: false });
+  if (overwrite || empty(doc.get('summary', true))) doc.set('summary', metadata.summary);
+  return stringify(doc);
 }
 /** フロントマター全体（--- を含む）。本文の前に置く */
 export function frontmatterBlock(yaml: string, eol = '\n'): string {
@@ -151,16 +127,13 @@ export function truncate(body: string, limit: number): { text: string; truncated
   const end = /[\uD800-\uDBFF]/.test(body[limit - 1]) ? limit - 1 : limit;
   return { text: body.slice(0, end), truncated: true };
 }
-export function metadataSchema(categories: readonly string[]): object {
+export function metadataSchema(): object {
   return {
     title: 'MemoMetadata',
     type: 'object',
     properties: {
-      title: { type: 'string', description: 'メモの内容を表す簡潔な日本語タイトル' },
       tags: { type: 'array', items: { type: 'string' }, description: '検索用タグ（3〜6個、日本語の短い名詞）' },
-      summary: { type: 'string', description: '1〜2文の日本語要約' },
-      category: { type: 'string', enum: [...categories], description: 'メモの分類' },
-      keywords: { type: 'array', items: { type: 'string' }, description: '関連キーワード（5〜8個）' }
+      summary: { type: 'string', description: '1〜2文の日本語要約' }
     },
     required: [...metadataKeys],
     'x-order': [...metadataKeys],
@@ -171,17 +144,14 @@ const instructions =
   'あなたはMarkdownメモを整理するアシスタントです。与えられたメモの内容から、検索しやすくするためのメタデータを日本語で作成してください。メモに書かれていない事実は加えないでください。';
 
 /** 構造化出力を使わないときに、出力の形を例で示す */
-function example(categories: readonly string[]): string {
+function example(): string {
   const sample = {
-    title: 'React useEffect の注意点',
     tags: ['React', 'フック', '副作用'],
-    summary: 'useEffectの依存配列の書き方と、StrictModeで2回実行される理由をまとめた。',
-    category: categories[0],
-    keywords: ['useEffect', '依存配列', 'StrictMode', '再レンダリング', 'React 18']
+    summary: 'useEffectの依存配列の書き方と、StrictModeで2回実行される理由をまとめた。'
   };
   return (
     `メタデータを次の例と同じ形のJSONだけで出力してください。\n例: ${JSON.stringify(sample)}\n` +
-    `title は内容を表す短いタイトル、tags は3〜6個の短い名詞、summary は本文を言い換えた1〜2文の要約、keywords は5〜8個。category は ${categories.join('・')} のうち1つだけ。`
+    'tags は3〜6個の短い名詞、summary は本文を言い換えた1〜2文の要約。'
   );
 }
 /** テキストで出力させたときの JSON を取り出す。```json のコードブロックや前後の文を除く */
@@ -205,7 +175,6 @@ export async function createMetadata(
   respond: (request: ModelRequest) => Promise<string>,
   name: string,
   body: string,
-  categories: readonly string[],
   limit = inputLimit
 ): Promise<Metadata> {
   if (!body.trim()) throw new Error('本文が空のため、メタデータを生成できません。');
@@ -217,10 +186,10 @@ export async function createMetadata(
     try {
       const output = await respond(
         structured
-          ? { schema: metadataSchema(categories), instructions, text, prompt }
-          : { permissive: true, instructions, text, prompt: `${prompt}\n${example(categories)}` }
+          ? { schema: metadataSchema(), instructions, text, prompt }
+          : { permissive: true, instructions, text, prompt: `${prompt}\n${example()}` }
       );
-      return normalizeMetadata(extractJson(output), categories);
+      return normalizeMetadata(extractJson(output));
     } catch (error) {
       if (error instanceof ContextSizeError && !shortened) {
         shortened = true;
@@ -231,14 +200,12 @@ export async function createMetadata(
   }
 }
 
-/** 一括付与で付与しなかった理由。done は summary と type が既にあるメモ */
+/** 一括付与で付与しなかった理由。done は summary が既にあるメモ */
 export type Skip = 'done' | 'empty' | 'large' | 'busy' | 'changed';
-/** 一括付与で行うこと。type は付与済み（summary あり）で OKF の type だけがないメモで、モデルを呼ばずに type だけ足す */
-export type Task = 'generate' | 'type';
 /** 一括付与で行うこと。対象外ならその理由を返す。フロントマターを解釈できなければ例外 */
-export function bulkTask(text: string): Task | 'done' | 'empty' {
+export function bulkTask(text: string): 'generate' | 'done' | 'empty' {
   const { yaml, body } = splitFrontmatter(text.replace(/^\uFEFF/, ''));
-  if (existingKeys(yaml).includes('summary')) return empty(parse(yaml).get('type', true)) ? 'type' : 'done';
+  if (existingKeys(yaml).includes('summary')) return 'done';
   return body.trim() ? 'generate' : 'empty';
 }
 /** 一括付与の対象にする拡張子。.txt はフロントマターを書く形式ではないため除く */
@@ -255,40 +222,19 @@ async function read(file: string): Promise<string | undefined> {
   }
 }
 /** ファイルに一括付与で行うこと。対象外ならその理由を返す */
-export async function fileBulkTask(file: string): Promise<Task | 'done' | 'empty' | 'large'> {
+export async function fileBulkTask(file: string): Promise<'generate' | 'done' | 'empty' | 'large'> {
   const text = await read(file);
   return text === undefined ? 'large' : bulkTask(text);
 }
-/**
- * ファイルにメタデータを付与して保存し、行ったことを返す。既存の値は上書きしない。付与済みで type だけがないメモは type だけ足す。
- * busy はエディタで未保存の変更があるか。生成の前後で確かめ、生成中にファイルが変わっていれば書き込まない。
- * 書き込みは同じフォルダの隠しファイルに書いてから置き換え、途中で止まってもメモを壊さない
- */
-export async function addMetadataToFile(
-  file: string,
-  generate: (body: string) => Promise<Metadata>,
-  busy: () => boolean
-): Promise<Task | Skip> {
-  if (busy()) return 'busy';
-  const before = await read(file);
-  if (before === undefined) return 'large';
-  const task = bulkTask(before);
-  if (task === 'done' || task === 'empty') return task;
-  const bom = before.startsWith('\uFEFF') ? '\uFEFF' : '';
-  const { yaml, body, end } = splitFrontmatter(before.slice(bom.length));
-  let merged: string;
-  if (task === 'type') {
-    const doc = parse(yaml);
-    addType(doc);
-    merged = doc.toString({ lineWidth: 0, flowCollectionPadding: false });
-  } else {
-    const metadata = await generate(body);
-    if (busy()) return 'busy';
-    if ((await read(file)) !== before) return 'changed';
-    merged = mergeFrontmatter(yaml, metadata, false);
-  }
-  const eol = before.includes('\r\n') ? '\r\n' : '\n';
-  const content = bom + frontmatterBlock(merged, eol) + before.slice(bom.length + end);
+/** フロントマターを差し替えた全文。BOM と改行コードは保つ。yaml が undefined ならフロントマターごと消す */
+function replaceFrontmatter(text: string, yaml: string | undefined): string {
+  const bom = text.startsWith('\uFEFF') ? '\uFEFF' : '';
+  const { end } = splitFrontmatter(text.slice(bom.length));
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  return bom + (yaml === undefined ? '' : frontmatterBlock(yaml, eol)) + text.slice(bom.length + end);
+}
+/** 同じフォルダの隠しファイルに書いてから置き換え、途中で止まってもメモを壊さない */
+async function writeAtomic(file: string, content: string): Promise<void> {
   const temporary = path.join(path.dirname(file), `.${path.basename(file)}.${process.pid}.tmp`);
   try {
     await fs.writeFile(temporary, content, { mode: (await fs.stat(file)).mode });
@@ -297,13 +243,49 @@ export async function addMetadataToFile(
     await fs.rm(temporary, { force: true });
     throw error;
   }
+}
+/**
+ * ファイルにメタデータを付与して保存し、行ったことを返す。既存の値は上書きしない。
+ * busy はエディタで未保存の変更があるか。生成の前後で確かめ、生成中にファイルが変わっていれば書き込まない
+ */
+export async function addMetadataToFile(
+  file: string,
+  generate: (body: string) => Promise<Metadata>,
+  busy: () => boolean
+): Promise<'generate' | Skip> {
+  if (busy()) return 'busy';
+  const before = await read(file);
+  if (before === undefined) return 'large';
+  const task = bulkTask(before);
+  if (task !== 'generate') return task;
+  const { yaml, body } = splitFrontmatter(before.replace(/^\uFEFF/, ''));
+  const metadata = await generate(body);
+  if (busy()) return 'busy';
+  if ((await read(file)) !== before) return 'changed';
+  await writeAtomic(file, replaceFrontmatter(before, mergeFrontmatter(yaml, metadata, false)));
   return task;
+}
+/** ファイルに消去するフロントマターがあるか。none はフロントマターのないメモ */
+export async function fileClearTask(file: string): Promise<'clear' | 'none' | 'large'> {
+  const text = await read(file);
+  if (text === undefined) return 'large';
+  return splitFrontmatter(text.replace(/^\uFEFF/, '')).yaml === undefined ? 'none' : 'clear';
+}
+/** 消去しなかった理由 */
+export type ClearSkip = 'none' | 'large' | 'busy';
+/** ファイルのフロントマターを --- ごと消して保存する。中身を解釈できなくても消す */
+export async function clearMetadataFromFile(file: string, busy: () => boolean): Promise<'cleared' | ClearSkip> {
+  if (busy()) return 'busy';
+  const before = await read(file);
+  if (before === undefined) return 'large';
+  if (splitFrontmatter(before.replace(/^\uFEFF/, '')).yaml === undefined) return 'none';
+  await writeAtomic(file, replaceFrontmatter(before, undefined));
+  return 'cleared';
 }
 
 /** 検索に使うフロントマターの値 */
 export interface NoteMetadata {
   tags: string[];
-  category?: string;
   title?: string;
   summary?: string;
 }
@@ -312,11 +294,7 @@ export function noteMetadata(text: string): NoteMetadata {
   const doc = parseDocument(splitFrontmatter(text.replace(/^\uFEFF/, '')).yaml ?? '');
   if (doc.errors.length || !isMap(doc.contents)) return { tags: [] };
   const value = doc.get('tags', true);
-  const tags = isSeq(value)
-    ? value.items.map(item => String(isScalar(item) ? item.value : item))
-    : isScalar(value) && !empty(value)
-      ? String(value.value).split(/[,\s]+/)
-      : [];
+  const tags = readTags(value);
   const string = (key: string) => {
     const item = doc.get(key);
     return typeof item === 'string' && item.trim() ? item.trim() : undefined;
@@ -326,7 +304,6 @@ export function noteMetadata(text: string): NoteMetadata {
       tags.map(t => t.trim().replace(/^#+/, '')),
       Infinity
     ),
-    category: string('category'),
     title: string('title'),
     summary: string('summary')
   };
@@ -349,25 +326,19 @@ export async function readNotes(files: Entry[]): Promise<{ entry: Entry; metadat
   }
   return result;
 }
+
 export interface Group<T> {
-  kind: 'category' | 'tag';
   name: string;
   notes: T[];
 }
-/** カテゴリ・タグごとにメモをまとめる。大文字・小文字は区別せず、件数の多い順（同数なら名前順）に並べる */
+/** タグごとにメモをまとめる。大文字・小文字は区別せず、件数の多い順（同数なら名前順）に並べる */
 export function groupNotes<T extends { metadata: NoteMetadata }>(notes: T[]): Group<T>[] {
   const groups = new Map<string, Group<T>>();
-  const add = (kind: Group<T>['kind'], name: string, note: T) => {
-    const key = `${kind}:${name.toLowerCase()}`;
-    const group = groups.get(key) ?? { kind, name, notes: [] };
-    group.notes.push(note);
-    groups.set(key, group);
-  };
-  for (const note of notes) {
-    if (note.metadata.category) add('category', note.metadata.category, note);
-    for (const tag of note.metadata.tags) add('tag', tag, note);
-  }
-  return [...groups.values()].sort(
-    (a, b) => Number(a.kind === 'tag') - Number(b.kind === 'tag') || b.notes.length - a.notes.length || a.name.localeCompare(b.name)
-  );
+  for (const note of notes)
+    for (const name of note.metadata.tags) {
+      const group = groups.get(name.toLowerCase()) ?? { name, notes: [] };
+      group.notes.push(note);
+      groups.set(name.toLowerCase(), group);
+    }
+  return [...groups.values()].sort((a, b) => b.notes.length - a.notes.length || a.name.localeCompare(b.name));
 }

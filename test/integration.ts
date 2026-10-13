@@ -38,6 +38,7 @@ export async function run(): Promise<void> {
     'searchText',
     'searchTag',
     'generateMetadata',
+    'clearMetadata',
     'rename',
     'delete',
     'reveal',

@@ -12,7 +12,8 @@ import {
   frontmatterBlock,
   truncate,
   createMetadata,
-  defaultCategories,
+  clearMetadataFromFile,
+  fileClearTask,
   Metadata,
   bulkTask,
   markdown,
@@ -27,11 +28,8 @@ import { MemoStore, maxSearchSize } from '../src/core';
 import { FoundationModel, ContextSizeError, CancelledError, TimeoutError, GuardrailError, ModelRequest } from '../src/foundationModel';
 
 const metadata: Metadata = {
-  title: 'ブックマークの保存方式',
   tags: ['VS-Code', 'ブックマーク'],
-  summary: '保存方式をJSONファイルに切り替えた。',
-  category: '技術',
-  keywords: ['globalState', 'キュー']
+  summary: '保存方式をJSONファイルに切り替えた。'
 };
 
 test('frontmatter is split from the body', () => {
@@ -46,7 +44,8 @@ test('frontmatter is split from the body', () => {
 
 test('existing keys need confirmation except tags', () => {
   assert.deepEqual(existingKeys(undefined), []);
-  assert.deepEqual(existingKeys('title: a\ntags: [x]\nsummary: ""\ncategory:\nkeywords: []'), ['title']);
+  assert.deepEqual(existingKeys('title: a\ntags: [x]\nsummary: ""'), []);
+  assert.deepEqual(existingKeys('tags: [x]\nsummary: s'), ['summary']);
   assert.throws(() => existingKeys('title: [a'), /解釈できません/);
   assert.throws(() => existingKeys('- a\n- b'), /キーと値/);
 });
@@ -61,52 +60,30 @@ test('tags follow Obsidian rules', () => {
 });
 
 test('model output is validated and normalized', () => {
-  const result = normalizeMetadata(
-    {
-      title: ' タイトル\n改行 ',
-      tags: ['VS Code', 'vs-code', '2026', 'a', 'b', 'c', 'd', 'e', 'f'],
-      summary: '要約。',
-      category: '開発',
-      keywords: ['x', 'X', '', 1]
-    },
-    defaultCategories
-  );
-  assert.deepEqual(result, {
-    title: 'タイトル 改行',
-    tags: ['VS-Code', 'a', 'b', 'c', 'd', 'e'],
-    summary: '要約。',
-    category: 'その他',
-    keywords: ['x']
+  const result = normalizeMetadata({
+    title: '余分なキー',
+    tags: ['VS Code', 'vs-code', '2026', 'a', 'b', 'c', 'd', 'e', 'f'],
+    summary: ' 要約\n改行 '
   });
-  assert.equal(normalizeMetadata({ ...metadata, category: '未知' }, ['A', 'B']).category, 'B');
-  assert.throws(() => normalizeMetadata({ ...metadata, summary: '' }, defaultCategories), /要約/);
-  assert.throws(() => normalizeMetadata('text', defaultCategories), /解釈できません/);
+  assert.deepEqual(result, { tags: ['VS-Code', 'a', 'b', 'c', 'd', 'e'], summary: '要約 改行' });
+  assert.throws(() => normalizeMetadata({ ...metadata, summary: '' }), /要約/);
+  assert.throws(() => normalizeMetadata('text'), /解釈できません/);
 });
 
 test('metadata is merged without losing existing frontmatter', () => {
-  const now = new Date('2026-10-13T01:02:03.456Z');
   assert.equal(
-    mergeFrontmatter(undefined, metadata, false, now),
-    'type: note\ntags:\n  - VS-Code\n  - ブックマーク\ntitle: ブックマークの保存方式\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
+    mergeFrontmatter(undefined, metadata, false),
+    'tags: [VS-Code, ブックマーク]\nsummary: 保存方式をJSONファイルに切り替えた。\n'
   );
-  // 既存のキー・コメント・順序は残し、タグは足す
-  const merged = mergeFrontmatter('# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n', metadata, false, now);
+  // 既存のキー・コメント・順序は残し、タグは足して [a, b] の形にする
   assert.equal(
-    merged,
-    '# メモ\ntype: note\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n  - ブックマーク\nsummary: 保存方式をJSONファイルに切り替えた。\ncategory: 技術\nkeywords:\n  - globalState\n  - キュー\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
+    mergeFrontmatter('# メモ\naliases: [bm]\ntitle: 手書き\ntags:\n  - "#vs-code"\n  - 設計\n', metadata, false),
+    '# メモ\naliases: [bm]\ntitle: 手書き\ntags: ["#vs-code", 設計, ブックマーク]\nsummary: 保存方式をJSONファイルに切り替えた。\n'
   );
-  // OKF の type は既存の値を残し、generated は書き換える
-  assert.equal(
-    mergeFrontmatter('type: concept\ngenerated: {by: other, at: 2020-01-01T00:00:00Z}\n', metadata, true, now).split('tags:')[0],
-    'type: concept\ngenerated:\n  by: memo-explorer/apple-foundation-models\n  at: 2026-10-13T01:02:03Z\n'
-  );
-  assert.match(mergeFrontmatter('type:\n', metadata, false, now), /^type: note\n/);
-  assert.match(mergeFrontmatter('title: 手書き', metadata, true), /^title: ブックマークの保存方式$/m);
+  assert.match(mergeFrontmatter('summary: 手書き', metadata, false), /^summary: 手書き$/m);
+  assert.match(mergeFrontmatter('summary: 手書き', metadata, true), /^summary: 保存方式をJSONファイルに切り替えた。$/m);
   // 文字列のタグはリストにする
-  assert.match(
-    mergeFrontmatter('tags: 設計, vs-code', metadata, false),
-    /^type: note\ntags:\n {2}- 設計\n {2}- vs-code\n {2}- ブックマーク\n/
-  );
+  assert.match(mergeFrontmatter('tags: 設計, vs-code', metadata, false), /^tags: \[設計, vs-code, ブックマーク\]\n/);
   assert.equal(frontmatterBlock('a: 1\n', '\r\n'), '---\r\na: 1\r\n---\r\n');
   assert.equal(frontmatterBlock(''), '---\n---\n');
 });
@@ -124,21 +101,21 @@ test('metadata generation retries with a shorter body when the context overflows
     if (requests.length === 1) return Promise.reject(new ContextSizeError('too long'));
     return Promise.resolve(JSON.stringify(metadata));
   };
-  assert.deepEqual(await createMetadata(respond, 'メモ', 'あ'.repeat(100), defaultCategories, 80), metadata);
+  assert.deepEqual(await createMetadata(respond, 'メモ', 'あ'.repeat(100), 80), metadata);
   assert.deepEqual(
     requests.map(r => r.text.length),
     [80, 40]
   );
   assert.match(requests[0].prompt, /ファイル名「メモ」.*先頭の一部/);
-  assert.deepEqual((requests[0].schema as { properties: { category: { enum: string[] } } }).properties.category.enum, defaultCategories);
+  assert.deepEqual(Object.keys((requests[0].schema as { properties: object }).properties), ['tags', 'summary']);
   // 2回目も超えたら諦める
   await assert.rejects(
-    createMetadata(() => Promise.reject(new ContextSizeError('too long')), 'メモ', 'あ', defaultCategories),
+    createMetadata(() => Promise.reject(new ContextSizeError('too long')), 'メモ', 'あ'),
     ContextSizeError
   );
-  await assert.rejects(createMetadata(respond, 'メモ', ' \n', defaultCategories), /本文が空/);
+  await assert.rejects(createMetadata(respond, 'メモ', ' \n'), /本文が空/);
   await assert.rejects(
-    createMetadata(() => Promise.resolve('not json'), 'メモ', 'a', defaultCategories),
+    createMetadata(() => Promise.resolve('not json'), 'メモ', 'a'),
     /解釈できません/
   );
 });
@@ -194,12 +171,9 @@ test('fm is called with arguments that survive hyphenated text', { skip: process
 });
 
 test('bulk targets skip processed, empty and non-markdown notes', () => {
-  assert.equal(bulkTask('---\ntype: note\nsummary: 済み\n---\n本文'), 'done');
-  // 旧版で付与済みのメモは type だけ足す
-  assert.equal(bulkTask('---\nsummary: 済み\n---\n本文'), 'type');
-  assert.equal(bulkTask('---\ntype:\nsummary: 済み\n---\n'), 'type');
+  assert.equal(bulkTask('---\nsummary: 済み\n---\n本文'), 'done');
   assert.equal(bulkTask('---\ntitle: 手書き\n---\n本文'), 'generate');
-  assert.equal(bulkTask('\uFEFF---\ntype: note\nsummary: 済み\n---\n本文'), 'done');
+  assert.equal(bulkTask('\uFEFF---\nsummary: 済み\n---\n本文'), 'done');
   assert.equal(bulkTask('---\ntags: [a]\n---\n \n'), 'empty');
   assert.throws(() => bulkTask('---\ntitle: [a\n---\n本文'), /解釈できません/);
   assert.equal(markdown('a.md', '.md'), true);
@@ -220,10 +194,9 @@ test('metadata is written to files without clobbering edits', async t => {
   await fs.writeFile(file, '\uFEFF---\r\naliases: [a]\r\n---\r\n- 本文\r\n');
   assert.equal(await addMetadataToFile(file, generate, () => false), 'generate');
   const written = await fs.readFile(file, 'utf8');
-  assert.match(written, /^\uFEFF---\r\ntype: note\r\naliases: \[a\]\r\ntags:\r\n {2}- VS-Code\r\n/);
-  assert.match(
+  assert.equal(
     written,
-    /summary: 保存方式をJSONファイルに切り替えた。\r\ncategory: 技術\r\nkeywords:\r\n {2}- globalState\r\n {2}- キュー\r\ngenerated:\r\n {2}by: memo-explorer\/apple-foundation-models\r\n {2}at: \d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ\r\n---\r\n- 本文\r\n$/
+    '\uFEFF---\r\naliases: [a]\r\ntags: [VS-Code, ブックマーク]\r\nsummary: 保存方式をJSONファイルに切り替えた。\r\n---\r\n- 本文\r\n'
   );
   assert.deepEqual(await fs.readdir(root), ['memo.md']);
   // 付与済みは生成しない
@@ -237,18 +210,20 @@ test('metadata is written to files without clobbering edits', async t => {
     'done'
   );
 
-  // 旧版で付与済みのメモは生成せず type だけ足す
-  await fs.writeFile(file, '---\r\n# 旧版\r\ntitle: 手書き\r\nsummary: 済み\r\n---\r\n本文\r\n');
-  assert.equal(await fileBulkTask(file), 'type');
-  assert.equal(
-    await addMetadataToFile(
-      file,
-      () => assert.fail('generated'),
-      () => false
-    ),
-    'type'
-  );
-  assert.equal(await fs.readFile(file, 'utf8'), '---\r\n# 旧版\r\ntype: note\r\ntitle: 手書き\r\nsummary: 済み\r\n---\r\n本文\r\n');
+  // 消去するとフロントマターを --- ごと消す。BOM は残す
+  assert.equal(await fileClearTask(file), 'clear');
+  assert.equal(await clearMetadataFromFile(file, () => true), 'busy');
+  assert.equal(await clearMetadataFromFile(file, () => false), 'cleared');
+  assert.equal(await fs.readFile(file, 'utf8'), '\uFEFF- 本文\r\n');
+  assert.equal(await fileClearTask(file), 'none');
+  assert.equal(await clearMetadataFromFile(file, () => false), 'none');
+  // 解釈できないフロントマターや空のフロントマターも消す
+  for (const text of ['---\ntags: [a\n---\n本文\n', '---\n---\n本文\n']) {
+    await fs.writeFile(file, text);
+    assert.equal(await clearMetadataFromFile(file, () => false), 'cleared');
+    assert.equal(await fs.readFile(file, 'utf8'), '本文\n');
+  }
+  assert.deepEqual(await fs.readdir(root), ['memo.md']);
 
   const original = '本文\n';
   await fs.writeFile(file, original);
@@ -278,6 +253,8 @@ test('metadata is written to files without clobbering edits', async t => {
     ),
     'large'
   );
+  assert.equal(await fileClearTask(file), 'large');
+  assert.equal(await clearMetadataFromFile(file, () => false), 'large');
   await fs.writeFile(file, '');
   assert.equal(await fileBulkTask(file), 'empty');
 });
@@ -298,18 +275,16 @@ test('all files can be listed from a subfolder', async t => {
 test('search metadata is read leniently from frontmatter', () => {
   assert.deepEqual(noteMetadata('---\ntitle: T\nsummary: S\ncategory: 技術\ntags:\n  - "#a"\n  - b\n  - A\n---\n本文'), {
     tags: ['a', 'b'],
-    category: '技術',
     title: 'T',
     summary: 'S'
   });
-  assert.deepEqual(noteMetadata('\uFEFF---\ntags: a, b c\ncategory: 1\n---\n').tags, ['a', 'b', 'c']);
-  assert.equal(noteMetadata('---\ncategory: 1\n---\n').category, undefined);
+  assert.deepEqual(noteMetadata('\uFEFF---\ntags: a, b c\n---\n').tags, ['a', 'b', 'c']);
   // 壊れたフロントマターやフロントマターなしは値なし
   assert.deepEqual(noteMetadata('---\ntags: [a\n---\n'), { tags: [] });
   assert.deepEqual(noteMetadata('本文 #tag'), { tags: [] });
 });
 
-test('notes are grouped by category and tag', async t => {
+test('notes are grouped by tag', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-tags-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const files = {
@@ -328,13 +303,11 @@ test('notes are grouped by category and tag', async t => {
     ['a.md', 'b.md', 'c.md', 'd.md']
   );
   assert.deepEqual(
-    groupNotes(notes).map(g => [g.kind, g.name, g.notes.map(n => n.entry.name).join()]),
+    groupNotes(notes).map(g => [g.name, g.notes.map(n => n.entry.name).join()]),
     [
-      ['category', '技術', 'a.md,b.md'],
-      ['category', '生活', 'c.md'],
-      ['tag', 'react', 'a.md,b.md'],
-      ['tag', 'Hooks', 'a.md'],
-      ['tag', '買い物', 'c.md']
+      ['react', 'a.md,b.md'],
+      ['Hooks', 'a.md'],
+      ['買い物', 'c.md']
     ]
   );
 });
@@ -344,19 +317,16 @@ test('guardrail rejections are retried as permissive text generation', async () 
   const respond = (request: ModelRequest) => {
     requests.push(request);
     if (requests.length === 1) return Promise.reject(new GuardrailError('blocked'));
-    return Promise.resolve('はい。\n```json\n' + JSON.stringify({ ...metadata, category: '読書' }) + '\n```');
+    return Promise.resolve('はい。\n```json\n' + JSON.stringify(metadata) + '\n```');
   };
-  assert.deepEqual(await createMetadata(respond, '小説', '本文', defaultCategories), { ...metadata, category: 'その他' });
+  assert.deepEqual(await createMetadata(respond, '小説', '本文'), metadata);
   assert.ok(requests[0].schema && !requests[0].permissive);
   assert.ok(!requests[1].schema && requests[1].permissive);
-  assert.match(
-    requests[1].prompt,
-    /^ファイル名「小説」.*\n.*例: \{.*"category":"技術".*技術・仕事・学習・生活・アイデア・その他 のうち1つだけ/s
-  );
+  assert.match(requests[1].prompt, /^ファイル名「小説」.*\n.*例: \{"tags":\[.*\],"summary":".*"\}\ntags は3〜6個/s);
   // 緩めても止められたら諦める
   let calls = 0;
   await assert.rejects(
-    createMetadata(() => (calls++, Promise.reject(new GuardrailError('blocked'))), '小説', '本文', defaultCategories),
+    createMetadata(() => (calls++, Promise.reject(new GuardrailError('blocked'))), '小説', '本文'),
     GuardrailError
   );
   assert.equal(calls, 2);

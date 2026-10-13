@@ -109,7 +109,7 @@
       },
       {
         "command": "memo.searchTag",
-        "title": "タグ・カテゴリで検索",
+        "title": "タグで検索",
         "category": "Memo Explorer",
         "icon": "$(tag)"
       },
@@ -150,6 +150,12 @@
         "title": "メタデータを自動付与",
         "category": "Memo Explorer",
         "icon": "$(sparkle)"
+      },
+      {
+        "command": "memo.clearMetadata",
+        "title": "メタデータを消去",
+        "category": "Memo Explorer",
+        "icon": "$(clear-all)"
       },
       {
         "command": "memo.settings",
@@ -230,7 +236,12 @@
         {
           "command": "memo.generateMetadata",
           "when": "view == memoExplorer.files && viewItem =~ /^memo(File|Folder)/ && memoExplorer.metadataAvailable",
-          "group": "metadata"
+          "group": "metadata@1"
+        },
+        {
+          "command": "memo.clearMetadata",
+          "when": "view == memoExplorer.files && viewItem =~ /^memo(File|Folder)/",
+          "group": "metadata@2"
         },
         {
           "command": "memo.bookmark",
@@ -336,23 +347,6 @@
           "default": true,
           "scope": "application",
           "description": "エディタで開いたメモをツリービューで自動的に選択表示します。"
-        },
-        "memoExplorer.metadata.categories": {
-          "type": "array",
-          "items": {
-            "type": "string",
-            "minLength": 1
-          },
-          "default": [
-            "技術",
-            "仕事",
-            "学習",
-            "生活",
-            "アイデア",
-            "その他"
-          ],
-          "scope": "application",
-          "description": "メタデータの自動付与（macOS・Apple Intelligence）で category に使う候補。どれにも当てはまらないときは「その他」（なければ最後の候補）になります。"
         }
       }
     },

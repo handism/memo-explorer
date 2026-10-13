@@ -29,14 +29,15 @@ import {
   createMetadata,
   mergeFrontmatter,
   frontmatterBlock,
-  defaultCategories,
   addMetadataToFile,
+  clearMetadataFromFile,
   fileBulkTask,
+  fileClearTask,
   readNotes,
   groupNotes,
   markdown,
   Skip,
-  Task
+  ClearSkip
 } from './metadata';
 
 export { MemoTree, MemoDragAndDrop } from './memoTree';
@@ -298,17 +299,16 @@ export async function activate(context: vscode.ExtensionContext) {
   // メニューの表示に使う。判定には数秒かかることがあるため、起動を待たせない
   void model.available().then(ok => vscode.commands.executeCommand('setContext', 'memoExplorer.metadataAvailable', ok));
   const skipLabels: Record<Skip, string> = {
-    done: '付与済み（summary・type あり）',
+    done: '付与済み（summary あり）',
     empty: '本文が空',
     large: '2MB超',
     busy: 'エディタに未保存の変更あり',
     changed: '生成中に変更あり'
   };
-  /** フォルダ配下のメモにまとめて付与する。既存の値は上書きせず、summary があるメモは付与済みとして飛ばす（type がなければ type だけ足す） */
-  async function generateFolder(store: MemoStore, folder: Entry, categories: string[]): Promise<void> {
+  /** フォルダ配下のメモにまとめて付与する。既存の値は上書きせず、summary があるメモは付与済みとして飛ばす */
+  async function generateFolder(store: MemoStore, folder: Entry): Promise<void> {
     const files = (await store.allFiles(folder.path)).filter(e => markdown(e.name, store.defaultExtension));
     const targets: Entry[] = [],
-      count: Record<Task, number> = { generate: 0, type: 0 },
       skipped = new Map<Skip, number>(),
       failed: string[] = [];
     const relative = (entry: Entry) => path.relative(store.root, entry.path);
@@ -326,10 +326,8 @@ export async function activate(context: vscode.ExtensionContext) {
       for (const entry of files) {
         try {
           const task = await fileBulkTask(entry.path);
-          if (task === 'generate' || task === 'type') {
-            count[task]++;
-            targets.push(entry);
-          } else skip(entry, task);
+          if (task === 'generate') targets.push(entry);
+          else skip(entry, task);
         } catch (error) {
           fail(entry, error);
         }
@@ -344,21 +342,17 @@ export async function activate(context: vscode.ExtensionContext) {
       void vscode.window.showInformationMessage(`「${folder.name}」に付与するメモはありません。`, { detail: summary() });
       return;
     }
-    const minutes = Math.max(1, Math.round((count.generate * 5) / 60));
-    const typing = `付与済みの${count.type}件には、OKF の type だけを追加します（生成はしません）。`;
+    const minutes = Math.max(1, Math.round((targets.length * 5) / 60));
     const answer = await vscode.window.showWarningMessage(
-      count.generate
-        ? `「${folder.name}」の${count.generate}件のメモにメタデータを付与しますか？`
-        : `「${folder.name}」の${count.type}件の付与済みのメモに type を追加しますか？`,
+      `「${folder.name}」の${targets.length}件のメモにメタデータを付与しますか？`,
       {
         modal: true,
-        detail: `${count.generate ? `1件に数秒かかります（目安 約${minutes}分）。${count.type ? typing : ''}` : ''}既存の値は上書きせず、保存まで行います。途中でキャンセルできます。${summary() && '\n\n' + summary()}`
+        detail: `1件に数秒かかります（目安 約${minutes}分）。既存の値は上書きせず、保存まで行います。途中でキャンセルできます。${summary() && '\n\n' + summary()}`
       },
       '付与する'
     );
     if (answer !== '付与する') return;
     let added = 0,
-      typed = 0,
       cancelled = false;
     await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification, title: 'メタデータを付与中', cancellable: true },
@@ -374,15 +368,12 @@ export async function activate(context: vscode.ExtensionContext) {
             await store.assertInside(entry.path);
             const result = await addMetadataToFile(
               entry.path,
-              body => createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body, categories),
+              body => createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body),
               busy
             );
             if (result === 'generate') {
               added++;
               log(entry, '付与');
-            } else if (result === 'type') {
-              typed++;
-              log(entry, 'type を追加');
             } else skip(entry, result);
           } catch (error) {
             if (error instanceof CancelledError) break;
@@ -393,7 +384,7 @@ export async function activate(context: vscode.ExtensionContext) {
       }
     );
     const skippedCount = [...skipped.values()].reduce((a, b) => a + b, 0);
-    const text = `${cancelled ? 'キャンセルしました。' : ''}メタデータを${added}件に付与しました。${typed ? `type を${typed}件に追加しました。` : ''}${skippedCount ? `スキップ ${skippedCount}件。` : ''}${failed.length ? `失敗 ${failed.length}件。` : ''}`;
+    const text = `${cancelled ? 'キャンセルしました。' : ''}メタデータを${added}件に付与しました。${skippedCount ? `スキップ ${skippedCount}件。` : ''}${failed.length ? `失敗 ${failed.length}件。` : ''}`;
     const show = failed.length
       ? vscode.window.showWarningMessage(text, '詳細を表示')
       : vscode.window.showInformationMessage(text, '詳細を表示');
@@ -407,13 +398,7 @@ export async function activate(context: vscode.ExtensionContext) {
         'Apple Foundation Models を利用できません。Apple Intelligence 対応の macOS で、ターミナルの fm license で利用規約に同意してください。'
       );
     await store.assertInside(entry.path);
-    const categories = setting('metadata.categories', () => {
-      const value = config().get<unknown>('metadata.categories', defaultCategories);
-      if (!Array.isArray(value) || !value.every((v): v is string => typeof v === 'string' && !!v.trim()))
-        throw new Error('空でない文字列の配列で指定してください。');
-      return value.length ? value.map(v => v.trim()) : defaultCategories;
-    });
-    if (entry.directory) return generateFolder(store, entry, categories);
+    if (entry.directory) return generateFolder(store, entry);
     const document = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.path));
     await vscode.window.showTextDocument(document, { preview: false });
     const { yaml, body } = splitFrontmatter(document.getText());
@@ -422,7 +407,7 @@ export async function activate(context: vscode.ExtensionContext) {
     if (existing.length) {
       const answer = await vscode.window.showWarningMessage(
         `${existing.join('、')} は既にあります。`,
-        { modal: true, detail: 'tags は既存のタグに足します。' },
+        { modal: true, detail: 'tags は既存のタグに足します。振り直すときは先に「メタデータを消去」を実行してください。' },
         '上書きする',
         '空の項目だけ追加'
       );
@@ -437,7 +422,7 @@ export async function activate(context: vscode.ExtensionContext) {
         (_, token) => {
           const abort = new AbortController();
           token.onCancellationRequested(() => abort.abort());
-          return createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body, categories);
+          return createMetadata(request => model.respond(request, abort.signal), path.parse(entry.name).name, body);
         }
       );
     } catch (error) {
@@ -457,6 +442,98 @@ export async function activate(context: vscode.ExtensionContext) {
     if (!(await vscode.workspace.applyEdit(edit))) throw new Error('メタデータを書き込めませんでした。');
     void vscode.window.showInformationMessage('メタデータを追加しました。内容を確認して保存してください。');
   });
+  const clearSkipLabels: Record<ClearSkip, string> = {
+    none: 'フロントマターなし',
+    large: '2MB超',
+    busy: 'エディタに未保存の変更あり'
+  };
+  /** フォルダ配下のメモのフロントマターを --- ごとまとめて消去して保存する */
+  async function clearFolder(store: MemoStore, folder: Entry): Promise<void> {
+    const files = (await store.allFiles(folder.path)).filter(e => markdown(e.name, store.defaultExtension));
+    const targets: Entry[] = [],
+      skipped = new Map<ClearSkip, number>(),
+      failed: string[] = [];
+    const relative = (entry: Entry) => path.relative(store.root, entry.path);
+    const log = (entry: Entry, text: string) => output.appendLine(`[メタデータ消去] ${relative(entry)}: ${text}`);
+    const skip = (entry: Entry, reason: ClearSkip) => {
+      skipped.set(reason, (skipped.get(reason) ?? 0) + 1);
+      log(entry, `スキップ（${clearSkipLabels[reason]}）`);
+    };
+    const fail = (entry: Entry, error: unknown) => {
+      failed.push(relative(entry));
+      log(entry, `失敗 ${message(error)}`);
+    };
+    await vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title: 'メモを確認中…' }, async () => {
+      for (const entry of files) {
+        try {
+          const task = await fileClearTask(entry.path);
+          if (task === 'clear') targets.push(entry);
+          else skip(entry, task);
+        } catch (error) {
+          fail(entry, error);
+        }
+      }
+    });
+    if (!targets.length) {
+      void vscode.window.showInformationMessage(`「${folder.name}」にフロントマターのあるメモはありません。`);
+      return;
+    }
+    const answer = await vscode.window.showWarningMessage(
+      `「${folder.name}」の${targets.length}件のメモからフロントマターを消去しますか？`,
+      {
+        modal: true,
+        detail:
+          'フロントマターを --- ごと消して保存します。tags・summary 以外のキー（手書きの値や旧版で自動付与した値を含む）もすべて消えます。'
+      },
+      '消去する'
+    );
+    if (answer !== '消去する') return;
+    let cleared = 0;
+    await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification, title: 'メタデータを消去中', cancellable: true },
+      async (progress, token) => {
+        for (const [index, entry] of targets.entries()) {
+          if (token.isCancellationRequested) break;
+          progress.report({ message: `${index + 1}/${targets.length} ${relative(entry)}`, increment: 100 / targets.length });
+          const busy = () => vscode.workspace.textDocuments.some(d => d.isDirty && d.uri.scheme === 'file' && d.uri.fsPath === entry.path);
+          try {
+            await store.assertInside(entry.path);
+            const result = await clearMetadataFromFile(entry.path, busy);
+            if (result === 'cleared') {
+              cleared++;
+              log(entry, '消去');
+            } else skip(entry, result);
+          } catch (error) {
+            fail(entry, error);
+          }
+        }
+      }
+    );
+    const skippedCount = [...skipped.values()].reduce((a, b) => a + b, 0) - (skipped.get('none') ?? 0);
+    const text = `フロントマターを${cleared}件から消去しました。${skippedCount ? `スキップ ${skippedCount}件。` : ''}${failed.length ? `失敗 ${failed.length}件。` : ''}`;
+    const show = failed.length
+      ? vscode.window.showWarningMessage(text, '詳細を表示')
+      : vscode.window.showInformationMessage(text, '詳細を表示');
+    void show.then(choice => choice && output.show());
+  }
+  register('memo.clearMetadata', async (store, argument) => {
+    const entry = await choose(store, argument ?? fallback(store)[0]);
+    if (!entry) return;
+    await store.assertInside(entry.path);
+    if (entry.directory) return clearFolder(store, entry);
+    // 単体は保存せずにエディタへ反映し、確認と取り消しをできるようにする
+    const document = await vscode.workspace.openTextDocument(vscode.Uri.file(entry.path));
+    await vscode.window.showTextDocument(document, { preview: false });
+    const { yaml, end } = splitFrontmatter(document.getText());
+    if (yaml === undefined) {
+      void vscode.window.showInformationMessage('消去するフロントマターはありません。');
+      return;
+    }
+    const edit = new vscode.WorkspaceEdit();
+    edit.delete(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(end)));
+    if (!(await vscode.workspace.applyEdit(edit))) throw new Error('フロントマターを消去できませんでした。');
+    void vscode.window.showInformationMessage('フロントマターを消去しました。内容を確認して保存してください。');
+  });
   register('memo.searchTag', async store => {
     // 一覧の取得を待たずに開き、取得中はビジー表示にする
     const groups = store
@@ -464,17 +541,10 @@ export async function activate(context: vscode.ExtensionContext) {
       .then(readNotes)
       .then(notes => groupNotes(notes));
     const items = groups.then((list): (vscode.QuickPickItem & { group?: (typeof list)[number] })[] => {
-      if (!list.length) return [{ label: 'タグやカテゴリのあるメモはありません' }];
-      return list.flatMap((group, index) => [
-        ...(index && group.kind !== list[index - 1].kind ? [{ label: '', kind: vscode.QuickPickItemKind.Separator }] : []),
-        {
-          label: `${group.kind === 'category' ? '$(folder-library) カテゴリ: ' : '$(tag) '}${group.name}`,
-          description: `${group.notes.length}件`,
-          group
-        }
-      ]);
+      if (!list.length) return [{ label: 'タグのあるメモはありません' }];
+      return list.map(group => ({ label: `$(tag) ${group.name}`, description: `${group.notes.length}件`, group }));
     });
-    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'タグまたはカテゴリを選択' });
+    const picked = await vscode.window.showQuickPick(items, { placeHolder: 'タグを選択' });
     if (!picked?.group) return;
     const note = await vscode.window.showQuickPick(
       picked.group.notes.map(({ entry, metadata }) => ({
