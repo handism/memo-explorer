@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import * as path from 'node:path';
 import * as fs from 'node:fs/promises';
-import { Entry, inside, addBookmarks, moveBookmarks } from './core';
+import { Entry, inside, insertBookmarks, moveBookmarks } from './core';
 import { memoMime } from './memoTree';
 
 export interface Bookmark {
@@ -42,7 +42,9 @@ export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.T
    */
   constructor(
     private readonly file: string,
-    private readonly legacy?: vscode.Memento
+    private readonly legacy?: vscode.Memento,
+    /** ドロップでの書き込みの失敗を知らせる */
+    private readonly report?: (error: unknown) => void
   ) {}
   /** 追加順に並んだ、全保存先のブックマーク */
   get all(): string[] {
@@ -133,13 +135,17 @@ export class BookmarkTree implements vscode.TreeDataProvider<Bookmark>, vscode.T
   }
   /**
    * ブックマーク同士の並べ替えと、メモツリーからの追加。ドロップ先の位置へ入れ、空白部分へのドロップは末尾へ移す。
-   * 追加した項目は末尾から上へ動かすことになるため、ドロップ先の前に入る
+   * メモツリーからの項目は、既にブックマーク済みでもドロップ先の前に入れる
    */
   async handleDrop(target: Bookmark | undefined, data: vscode.DataTransfer): Promise<void> {
     const added = (data.get(memoMime)?.value as Entry[] | undefined)?.map(e => e.path) ?? [];
-    const sources = added.length ? added : (data.get(BookmarkTree.mime)?.value as string[] | undefined);
-    if (!sources?.length) return;
-    await this.update(list => moveBookmarks(addBookmarks(list, added), sources, target?.path));
+    const sources = data.get(BookmarkTree.mime)?.value as string[] | undefined;
+    if (!added.length && !sources?.length) return;
+    try {
+      await this.update(list => (added.length ? insertBookmarks(list, added, target?.path) : moveBookmarks(list, sources!, target?.path)));
+    } catch (error) {
+      this.report?.(error);
+    }
   }
   getTreeItem(bookmark: Bookmark): vscode.TreeItem {
     const relative = this.root ? path.relative(this.root, bookmark.path) : bookmark.path,

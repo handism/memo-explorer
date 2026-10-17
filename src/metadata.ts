@@ -84,10 +84,10 @@ export function normalizeMetadata(raw: unknown): Metadata {
   return metadata;
 }
 
-/** フロントマターの tags をタグの配列として読む。文字列ならカンマ・空白で区切る */
+/** フロントマターの tags をタグの配列として読む。文字列ならカンマ・空白で区切る。空の要素（- だけの行）は除く */
 function readTags(value: unknown): string[] {
   return isSeq(value)
-    ? value.items.map(item => String(isScalar(item) ? item.value : item))
+    ? value.items.filter(item => !empty(item)).map(item => String(isScalar(item) ? item.value : item))
     : isScalar(value) && !empty(value)
       ? String(value.value).split(/[,\s]+/)
       : [];
@@ -106,6 +106,8 @@ export function mergeFrontmatter(yaml: string | undefined, metadata: Metadata, o
   const tags = readTags(current).map(t => t.replace(/^#+/, ''));
   const known = new Set(tags.map(t => t.toLowerCase()));
   if (isSeq(current)) {
+    // 空の要素はフロースタイルにすると [, a] という解釈できないYAMLになるため除く
+    current.items = current.items.filter(item => !empty(item));
     for (const tag of metadata.tags) if (!known.has(tag.toLowerCase())) current.add(doc.createNode(tag));
     current.flow = true;
   } else {

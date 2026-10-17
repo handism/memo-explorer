@@ -22,6 +22,7 @@ import {
   removeBookmarks,
   renameBookmarks,
   moveBookmarks,
+  insertBookmarks,
   maxSearchSize
 } from '../src/core';
 
@@ -311,6 +312,19 @@ test('bookmarks reorder by drag and drop', () => {
   assert.deepEqual(moveBookmarks(list, [p('b.md'), p('c.md')], p('c.md')), list, 'dropped onto itself');
   assert.deepEqual(moveBookmarks(list, [p('x.md')], p('a.md')), list, 'unknown sources ignored');
 });
+test('bookmarks dropped from the memo tree go before the drop target', () => {
+  const p = (...s: string[]) => path.resolve('/memo', ...s);
+  const list = [p('a.md'), p('b.md'), p('c.md')];
+  assert.deepEqual(insertBookmarks(list, [p('new.md')], p('b.md')), [p('a.md'), p('new.md'), p('b.md'), p('c.md')]);
+  assert.deepEqual(insertBookmarks(list, [p('a.md')], p('c.md')), [p('b.md'), p('a.md'), p('c.md')], 'bookmarked above goes before');
+  assert.deepEqual(
+    insertBookmarks(list, [p('a.md'), p('new.md')], p('c.md')),
+    [p('b.md'), p('a.md'), p('new.md'), p('c.md')],
+    'mixed with new ones'
+  );
+  assert.deepEqual(insertBookmarks(list, [p('a.md'), p('new.md')]), [p('b.md'), p('c.md'), p('a.md'), p('new.md')], 'empty space');
+  assert.deepEqual(insertBookmarks(list, [p('b.md'), p('new.md')], p('b.md')), [...list, p('new.md')], 'dropped onto itself');
+});
 test('copy planning for files dropped from outside', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'memo-copy-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -357,6 +371,10 @@ test('hidden folders and links are not shown in the tree', async t => {
   assert.equal(store.listed(path.join(store.root, 'linked', 'note.md')), true);
   assert.equal(await store.visible(path.join(store.root, 'linked', 'note.md')), false);
   assert.equal(await store.visible(path.join(store.root, 'real', 'missing.md')), false);
+  assert.equal(await store.visible(path.join(store.root, 'real'), true), true);
+  assert.equal(await store.visible(path.join(store.root, 'linked'), true), false, 'linked folder');
+  assert.equal(await store.visible(path.join(store.root, '.obsidian'), true), false, 'hidden folder');
+  assert.equal(await store.visible(store.root, true), false, 'root itself');
   assert.equal(store.ignored(path.join(store.root, '.obsidian', 'workspace.json')), true);
   assert.equal(store.ignored(path.join(store.root, 'real', '.git')), true);
   assert.equal(store.ignored(note), false);

@@ -84,6 +84,9 @@ test('metadata is merged without losing existing frontmatter', () => {
   assert.match(mergeFrontmatter('summary: 手書き', metadata, true), /^summary: 保存方式をJSONファイルに切り替えた。$/m);
   // 文字列のタグはリストにする
   assert.match(mergeFrontmatter('tags: 設計, vs-code', metadata, false), /^tags: \[設計, vs-code, ブックマーク\]\n/);
+  // テンプレートにある空の要素（- だけの行）は除く。残すと [, a] という解釈できないYAMLになる
+  assert.match(mergeFrontmatter('tags:\n  -\n  - 設計\n', metadata, false), /^tags: \[設計, VS-Code, ブックマーク\]\n/);
+  assert.match(mergeFrontmatter('tags:\n  -\n', metadata, false), /^tags: \[VS-Code, ブックマーク\]\n/);
   assert.equal(frontmatterBlock('a: 1\n', '\r\n'), '---\r\na: 1\r\n---\r\n');
   assert.equal(frontmatterBlock(''), '---\n---\n');
 });
@@ -279,6 +282,7 @@ test('search metadata is read leniently from frontmatter', () => {
     summary: 'S'
   });
   assert.deepEqual(noteMetadata('\uFEFF---\ntags: a, b c\n---\n').tags, ['a', 'b', 'c']);
+  assert.deepEqual(noteMetadata('---\ntags:\n  -\n  - ~\n  - a\n---\n').tags, ['a'], 'empty items are not "null" tags');
   // 壊れたフロントマターやフロントマターなしは値なし
   assert.deepEqual(noteMetadata('---\ntags: [a\n---\n'), { tags: [] });
   assert.deepEqual(noteMetadata('本文 #tag'), { tags: [] });

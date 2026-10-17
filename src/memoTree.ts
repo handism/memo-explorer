@@ -10,8 +10,10 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   private readonly changed = new vscode.EventEmitter<Entry | undefined>();
   readonly onDidChangeTreeData = this.changed.event;
   private readonly status = new vscode.EventEmitter<string | undefined>();
-  /** 読み込みに失敗するとエラー内容を、ルートを読み込めると undefined を通知する */
+  /** 読み込みに失敗するとエラー内容を、失敗していたフォルダをすべて読み込めると undefined を通知する */
   readonly onDidChangeStatus = this.status.event;
+  /** 読み込みに失敗したフォルダとエラー内容。読み直して成功したものから消す */
+  private readonly failures = new Map<string, string>();
   /** VS Code は要素をオブジェクトの同一性で識別するため、部分更新や reveal には getChildren で返したものと同じ Entry を渡す */
   private readonly entries = new Map<string, Entry>();
   private current?: MemoStore;
@@ -23,6 +25,7 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   set store(store: MemoStore | undefined) {
     this.current = store;
     this.entries.clear();
+    this.failures.clear();
   }
   refresh(): void {
     // 全体を読み直すと getChildren で作り直されるため、削除済みの項目を持ち越さない
@@ -62,13 +65,20 @@ export class MemoTree implements vscode.TreeDataProvider<Entry>, vscode.Disposab
   }
   async getChildren(entry?: Entry): Promise<Entry[]> {
     if (!this.store) return [];
+    const folder = entry?.path ?? this.store.root;
     try {
-      const entries = await this.store.entries(entry?.path);
-      if (!entry) this.status.fire(undefined);
+      const entries = await this.store.entries(folder);
+      // ルートを読み直すと展開中のフォルダも読み直されるため、失敗が続いていればそこで再び記録される
+      if (!entry) this.failures.clear();
+      else this.failures.delete(folder);
       return entries.map(e => this.entry(e.path, e.directory));
     } catch (error) {
-      this.status.fire(message(error));
+      // 外部で消えたフォルダは、親フォルダの読み直しで一覧から外れるためエラーにしない
+      if (entry && (error as NodeJS.ErrnoException).code === 'ENOENT') this.failures.delete(folder);
+      else this.failures.set(folder, message(error));
       return [];
+    } finally {
+      this.status.fire(this.failures.values().next().value);
     }
   }
   getParent(entry: Entry): Entry | undefined {

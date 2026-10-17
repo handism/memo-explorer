@@ -54,12 +54,16 @@ function setting<T>(key: string, parse: () => T): T {
 
 export async function activate(context: vscode.ExtensionContext) {
   const tree = new MemoTree();
-  const bookmarks = new BookmarkTree(path.join(context.globalStorageUri.fsPath, 'bookmarks.json'), context.globalState);
+  const output = vscode.window.createOutputChannel('Memo Explorer');
+  const report = (error: unknown) => {
+    output.appendLine(message(error));
+    void vscode.window.showErrorMessage(`Memo Explorer: ${message(error)}`);
+  };
+  const bookmarks = new BookmarkTree(path.join(context.globalStorageUri.fsPath, 'bookmarks.json'), context.globalState, report);
   tree.bookmarked = target => bookmarks.has(target);
   // メモツリーの右クリックメニュー（追加／解除）を追従させる
   context.subscriptions.push(bookmarks.onDidChangeItems(targets => targets.forEach(t => tree.refreshItem(t))));
   const updateBookmarks = (change: (list: string[]) => string[]) => bookmarks.update(change);
-  const output = vscode.window.createOutputChannel('Memo Explorer');
   let watcher: vscode.FileSystemWatcher | undefined;
   let generation = 0;
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -67,10 +71,6 @@ export async function activate(context: vscode.ExtensionContext) {
   /** 保存先のファイルの作成・削除。全文検索が使い回すファイル一覧を捨てる合図にする */
   const filesChanged = new vscode.EventEmitter<void>();
   const config = () => vscode.workspace.getConfiguration('memoExplorer');
-  const report = (error: unknown) => {
-    output.appendLine(message(error));
-    void vscode.window.showErrorMessage(`Memo Explorer: ${message(error)}`);
-  };
   const dragAndDrop = new MemoDragAndDrop(tree, () => ready, report);
   const view = vscode.window.createTreeView('memoExplorer.files', {
     treeDataProvider: tree,
@@ -633,8 +633,9 @@ export async function activate(context: vscode.ExtensionContext) {
   register('memo.showInTree', async (store, argument) => {
     const target = (argument ?? bookmarkView.selection[0])?.path;
     if (!target) return;
-    const directory = !!(await fs.stat(target).catch(() => undefined))?.isDirectory();
-    if (!directory && !(await store.visible(target))) throw new Error('このメモはツリーに表示されていません。');
+    // リンクや隠しフォルダはツリーに出ないため、フォルダも表示されるものか確かめる
+    const directory = !!(await fs.lstat(target).catch(() => undefined))?.isDirectory();
+    if (!(await store.visible(target, directory))) throw new Error('この項目はツリーに表示されていません。');
     await vscode.commands.executeCommand('memoExplorer.files.focus');
     await revealEntry(target, directory, { select: true, focus: true, expand: directory });
   });

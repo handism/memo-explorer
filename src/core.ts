@@ -155,6 +155,18 @@ export function moveBookmarks(list: readonly string[], sources: readonly string[
   rest.splice(index, 0, ...moving);
   return rest;
 }
+/**
+ * メモツリーからドロップした項目を、ドロップ先の前（ドロップ先がなければ末尾）へ入れる。
+ * 既にブックマーク済みのものも、元の位置にかかわらずそこへ移す
+ */
+export function insertBookmarks(list: readonly string[], targets: readonly string[], target?: string): string[] {
+  const inserted = addBookmarks([], targets);
+  if (target !== undefined && inserted.includes(target)) return addBookmarks(list, targets);
+  const rest = list.filter(b => !inserted.includes(b));
+  const index = target === undefined ? -1 : rest.indexOf(target);
+  rest.splice(index < 0 ? rest.length : index, 0, ...inserted);
+  return rest;
+}
 /** 全文検索で読むファイルの上限サイズ */
 export const maxSearchSize = 2 * 1024 * 1024;
 export class MemoStore {
@@ -193,9 +205,10 @@ export class MemoStore {
         .some(s => s.startsWith('.'))
     );
   }
-  /** 一覧に表示されるメモか。list() はシンボリックリンクを除外するため、途中にリンクを含むパスも表示されない */
-  async visible(target: string): Promise<boolean> {
-    if (!this.listed(target)) return false;
+  /** 一覧に表示されるメモ（directory ならフォルダ）か。list() はシンボリックリンクを除外するため、途中にリンクを含むパスも表示されない */
+  async visible(target: string, directory = false): Promise<boolean> {
+    if (directory ? !path.relative(this.root, target) || !inside(this.root, target) || this.ignored(target) : !this.listed(target))
+      return false;
     let current = this.root;
     for (const segment of path.relative(this.root, target).split(path.sep)) {
       current = path.join(current, segment);
